@@ -113,6 +113,24 @@ with all of them, from about 120 ms in the morning. Still far from the console's
   the time goes to frames of ~490 ms in which the card is idle for ~330
   ms: some 850 remaps of title memory, 260 texture uploads and 450 disk
   reads in one frame. That is the next thing to measure and cut.
+- The dips while moving, measured (a sampling profile of the opening
+  cutscene, and a 370 s play session): the mean is 4.5 frames a second,
+  with half the time in frames of ~490 ms in which the card is idle for
+  ~330 ms. In those frames the title's render thread waits for its own
+  jobs, not for the layer. One of those jobs is the title's page-mapping
+  copies (`CopyPageMappingsBatchX` -> `xmem::map_alias`): the title maps
+  every streamed texture page into its tiled heap, a range of one page
+  each (over 4,096 different pool pages in a minute, about 850 pages in
+  a frame that streams), and each is a view taken away and a view mapped
+  in the kernel: 32 ms of every cutscene frame, 246 ms of a streaming
+  frame, nearly all of it waiting on the process's address space.
+- Two attempts on that, both taken back out: leaving alone pages that
+  already show what is asked (counted: there are none, every remap is a
+  real change), and mapping pool pages in a row as one view (1.8 to 4.2
+  pages a view, remap time 140 -> 79 ms a frame, BUT faces came out black
+  or red and one run drew garbage in 3 launches of 3, against none in 6
+  launches without it). Reverted; why a longer view breaks texture
+  streaming is not known yet.
 - Measured and found to give nothing (switches left in, off):
   `VICTORY_REFRESH_ONCE`, `VICTORY_ASYNC_PRESENT`, `VICTORY_VIEW_KNOWN`,
   `VICTORY_SPREAD`, `VICTORY_QUEUE2=3`, `VICTORY_WINDOW_JUMP`. Each has an
