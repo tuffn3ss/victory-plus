@@ -1763,6 +1763,8 @@ pub(crate) fn let_go_idle() {
     // For the trail (`crate::host::trail`): how many went, their bytes,
     // and the first one.
     let (mut went, mut bytes, mut first) = (0u64, 0u64, None);
+    // Copies idle as long, held by a descriptor slot only: how many, bytes.
+    let mut held = [0u64; 2];
     let all = textures();
     for &at in all.iter() {
         // SAFETY: a texture leaves the table before it is freed, under the
@@ -1778,6 +1780,14 @@ pub(crate) fn let_go_idle() {
                     && std::sync::Arc::strong_count(host) == 1
                     && crate::host::references(&host.texture) == 1
             });
+            if let Some((host, _)) = made.as_ref()
+                && !idle
+                && std::sync::Arc::strong_count(host) == 1
+                && crate::host::long_ago(r.host.used.load(Relaxed), idle_ms, IDLE_FRAMES)
+            {
+                held[0] += 1;
+                held[1] += host.tiled.as_ref().map_or(host.bytes, |t| t.given_bytes());
+            }
             if idle {
                 // Under the lock: the next use must not find the staging
                 // state of the texture let go (it says "uploaded").
@@ -1799,6 +1809,9 @@ pub(crate) fn let_go_idle() {
             crate::host::retire(host);
         }
     }
+    drop(all);
+    SLOT_HELD[0].store(held[0], Relaxed);
+    SLOT_HELD[1].store(held[1], Relaxed);
     if went > 0 {
         crate::host::trail(|| {
             format!(
@@ -1809,6 +1822,14 @@ pub(crate) fn let_go_idle() {
         });
     }
 }
+
+/// At the last sweep ([`let_go_idle`]): the host copies of textures the
+/// title fills that were idle as long as the sweep asks and held by no list,
+/// but kept because a descriptor slot still views them; and their bytes on
+/// the card (tiles given, for copies made level by level).
+#[cfg(windows)]
+pub(crate) static SLOT_HELD: [std::sync::atomic::AtomicU64; 2] =
+    [const { std::sync::atomic::AtomicU64::new(0) }; 2];
 
 /// For the memory line: the host copies the sweep never lets go
 /// ([`let_go_idle`] takes only copies of textures the title fills that the

@@ -235,10 +235,12 @@ fn status(now: u64) {
     let [budget, used, shared] = card.map_or([0; 3], |[own, pc]| [own[0] >> 20, own[1] >> 20, pc[1] >> 20]);
     tracing::info!(
         "status at {:.0} s, frame {}: the card {used} of {budget} MB ({}), {shared} MB of the PC's memory shared with it; \
-         in the last 30 s, texture passes that made none for lack of room {full}, ambient light passes {lit} (left out {unlit})",
+         in the last 30 s, texture passes that made none for lack of room {full}, ambient light passes {lit} (left out {unlit});          idle texture copies kept only by a descriptor slot {} ({} MB)",
         now as f64 / 1000.0,
         crate::frame::current(),
         if crate::resource::room() { "room for textures" } else { "full: new textures wait" },
+        crate::resource::SLOT_HELD[0].load(Ordering::Relaxed),
+        crate::resource::SLOT_HELD[1].load(Ordering::Relaxed) >> 20,
     );
 }
 

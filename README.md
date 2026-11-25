@@ -78,8 +78,9 @@ Windows 11 Pro. The Series X profile is used throughout.
   the end of its ring no longer keeps its voice, and the audio lock, filling
   forever, which silenced all sound.
 - **A status line every 30 seconds in every build**: the card's memory and
-  budget, textures refused for lack of room on the card, and the ambient
-  light's passes. It tells from a player's log whether a scene that went
+  budget, textures refused for lack of room on the card, the ambient
+  light's passes, and the idle texture copies that only a descriptor slot
+  keeps on the card (about 2.3 GB in the prison). It tells from a player's log whether a scene that went
   black or blurry had a full card.
 - victory-fork's new commits, merged as they land.
 
