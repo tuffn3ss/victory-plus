@@ -922,6 +922,78 @@ fn unmap(physical: &mut Physical, base: usize, len: usize) {
     }
 }
 
+/// `VICTORY_MEMORY_FLOOR_GB=n`: asks Windows to keep at least `n` GB of
+/// this process in physical memory (a hard minimum working set), stepping
+/// down 2 GB at a time to 4 if it will not give that much. Off (0) by
+/// default. Call once, before the title runs.
+///
+/// When the PC is short of free memory, Windows trims the working sets of
+/// big processes, and ours is the biggest (about 20 GB in gameplay). While
+/// it trims, each change to the address space waits: the title's page
+/// mappings (`map_alias`, `XMemMapPhysicalPages`), which take about 2 µs
+/// with memory to spare, took 0.4 ms on average over five minutes of
+/// play on a 32 GB PC with 2-4 GB free, and the frames that stream
+/// textures ran for seconds waiting on them. With a floor of 14 GB there:
+/// 81 and 199 µs a mapping in two runs, frames over a second 47 -> 11 and
+/// 25, the mean frame over the run 698 -> 192 and 357 ms. Other
+/// processes give up memory first instead, so set it below what the PC
+/// can spare.
+pub fn keep_in_memory() {
+    use windows_sys::Win32::Security::{
+        AdjustTokenPrivileges, LUID_AND_ATTRIBUTES, LookupPrivilegeValueW, SE_PRIVILEGE_ENABLED,
+        TOKEN_ADJUST_PRIVILEGES, TOKEN_PRIVILEGES, TOKEN_QUERY,
+    };
+    use windows_sys::Win32::System::Memory::SetProcessWorkingSetSizeEx;
+    use windows_sys::Win32::System::Threading::OpenProcessToken;
+    // QUOTA_LIMITS_HARDWS_MIN_ENABLE | QUOTA_LIMITS_HARDWS_MAX_DISABLE
+    const HARD_MINIMUM: u32 = 0x1 | 0x8;
+    const GIB: usize = 1 << 30;
+    let Some(asked) = std::env::var("VICTORY_MEMORY_FLOOR_GB")
+        .ok()
+        .and_then(|v| v.trim().parse::<usize>().ok())
+        .filter(|&gb| gb > 0)
+    else {
+        return;
+    };
+    // Raising a working set's minimum takes this privilege, which every
+    // user holds but which starts disabled.
+    // SAFETY: our own process's token, and structures we fill in.
+    unsafe {
+        let mut token = std::ptr::null_mut();
+        if OpenProcessToken(GetCurrentProcess(), TOKEN_ADJUST_PRIVILEGES | TOKEN_QUERY, &mut token) != 0 {
+            let mut privileges = TOKEN_PRIVILEGES {
+                PrivilegeCount: 1,
+                Privileges: [LUID_AND_ATTRIBUTES {
+                    Luid: std::mem::zeroed(),
+                    Attributes: SE_PRIVILEGE_ENABLED,
+                }],
+            };
+            let name: Vec<u16> = "SeIncreaseWorkingSetPrivilege".encode_utf16().chain([0]).collect();
+            if LookupPrivilegeValueW(std::ptr::null(), name.as_ptr(), &mut privileges.Privileges[0].Luid) != 0 {
+                AdjustTokenPrivileges(token, 0, &privileges, 0, std::ptr::null_mut(), std::ptr::null_mut());
+            }
+            CloseHandle(token);
+        }
+    }
+    let mut gb = asked;
+    loop {
+        // The maximum only matters as a soft one (disabled above); it must
+        // not be below the minimum.
+        // SAFETY: our own process.
+        let set = unsafe { SetProcessWorkingSetSizeEx(GetCurrentProcess(), gb * GIB, (gb * 2).max(32) * GIB, HARD_MINIMUM) } != 0;
+        if set {
+            tracing::info!(asked, gb, "memory floor: Windows keeps at least this many GB of the process in memory");
+            return;
+        }
+        let error = std::io::Error::last_os_error();
+        if gb <= 4 {
+            tracing::warn!(asked, %error, "memory floor: Windows would not keep even 4 GB in memory; none set");
+            return;
+        }
+        gb -= 2;
+    }
+}
+
 /// The oldest layout we know; newer titles pass other flag values (Minecraft
 /// 0x20000001) and read the same leading fields.
 #[repr(C)]
