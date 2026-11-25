@@ -451,6 +451,30 @@ pub(crate) static OBJECT_TEXTURE_SLOTS: std::sync::atomic::AtomicU64 = std::sync
 /// Bytes per element of a buffer view, as the console's descriptor holds
 /// them for indexed reads (structured: the stride; raw: 1, the index is the
 /// byte; typed: the format's); `None` if `view` is not a buffer view.
+/// A texture view's size as the shaders' table holds it
+/// (`victory_shader::emit::SLOT_SIZES`): width less one in bits 0-13,
+/// height less one in bits 14-27, the view's first mip in bits 28-31.
+fn texture_size_word(view: &View) -> Option<u32> {
+    let (width, height, desc): (u64, u32, Option<&[u32]>) = match view {
+        View::Shader(r, desc) => {
+            let (w, h) = crate::resource::texture_size(*r as crate::object::This)?;
+            (w, h, desc.as_ref().map(|d| &d[..]))
+        }
+        View::Placed(false, resource, desc) if resource[0] != 1 => (
+            u64::from(resource[4]) | u64::from(resource[5]) << 32,
+            resource[6],
+            Some(&desc[..10]),
+        ),
+        _ => return None,
+    };
+    // `MostDetailedMip`: dword 4 of every texture view's description but
+    // multisampled ones.
+    let mip = desc.filter(|d| matches!(d[1], 2..=5 | 8..=10)).map_or(0, |d| d[4]);
+    let w = width.saturating_sub(1).min(0x3FFF) as u32;
+    let h = height.saturating_sub(1).min(0x3FFF);
+    Some(w | h << 14 | (mip & 0xF) << 28)
+}
+
 fn view_stride(view: &View) -> Option<u32> {
     const BUFFER: u32 = 1;
     let (words, unordered): (&[u32; 10], bool) = match view {
@@ -608,7 +632,8 @@ impl HostHeap {
         ));
         let strides = (!sampler)
             .then(|| {
-                let bytes = u64::from(victory_shader::emit::SLOT_STRIDES_COUNT) * 4;
+                // Strides, then each slot's texture size (`SLOT_SIZES`).
+                let bytes = u64::from(victory_shader::emit::SLOT_STRIDES_COUNT) * 8;
                 let (buffer, data) = host.upload_buffer(bytes)?;
                 // SAFETY: the buffer's whole mapping; a live buffer.
                 let gpu = unsafe {
@@ -1042,6 +1067,10 @@ impl HostHeap {
             // SAFETY: inside the mapping; shaders read it while we write (a
             // dword, either value is one the slot had).
             unsafe { (*data as *mut u32).add(index as usize).write_volatile(stride.unwrap_or(0)) };
+            let size = view.and_then(texture_size_word).unwrap_or(0);
+            let at = (victory_shader::emit::SLOT_STRIDES_COUNT + index) as usize;
+            // SAFETY: inside the mapping's second half, as above.
+            unsafe { (*data as *mut u32).add(at).write_volatile(size) };
         }
         let mut buffers = self.buffers.lock().unwrap_or_else(|e| e.into_inner());
         let was = if stride.is_some() {

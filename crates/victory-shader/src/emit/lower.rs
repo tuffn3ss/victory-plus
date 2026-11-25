@@ -5578,6 +5578,59 @@ impl<'a> Lower<'a> {
                 }
                 return Ok(());
             }
+            // A texture picked from the view heap whose descriptor the
+            // program reads only for its size (width and height less one in
+            // dwords 1-2, first mip in dword 3): those fields from the host's
+            // table by heap slot (`SLOT_SIZES`).
+            // shortcut: the other dwords (address, format, swizzle) have no
+            // value; the index's computed part is taken as whole descriptors.
+            if let Some(a) = self.scalar.get(&site).copied()
+                && self
+                    .x
+                    .native
+                    .layout
+                    .get(a.param)
+                    .is_some_and(|p| p.root == RootType::ResourceHeap)
+            {
+                let packed = self.slot_size(site)?;
+                let c = self.cur;
+                let k = |l: &mut Self, v: u32| l.s.m.i32(v);
+                for n in 0..count {
+                    let reg = Reg::S(code + n as u8);
+                    let val = match (a.offset / 4 + n) % 8 {
+                        0 => Some(k(self, 0)),
+                        1 => {
+                            let (m, sh) = (k(self, 3), k(self, 30));
+                            let w = self.s.m.bin(c, Bin::And, packed, m);
+                            Some(self.s.m.bin(c, Bin::Shl, w, sh))
+                        }
+                        2 => {
+                            let (m, two) = (k(self, 0x3FFC), k(self, 2));
+                            let w = self.s.m.bin(c, Bin::And, packed, m);
+                            let w = self.s.m.bin(c, Bin::LShr, w, two);
+                            let m = k(self, 0x0FFF_C000);
+                            let h = self.s.m.bin(c, Bin::And, packed, m);
+                            Some(self.s.m.bin(c, Bin::Or, w, h))
+                        }
+                        3 => {
+                            let (sh, up) = (k(self, 28), k(self, 12));
+                            let mip = self.s.m.bin(c, Bin::LShr, packed, sh);
+                            Some(self.s.m.bin(c, Bin::Shl, mip, up))
+                        }
+                        _ => None,
+                    };
+                    match val {
+                        Some(x) => self.write(inst, reg, x, None),
+                        None => {
+                            if let Some(v) = inst.write(reg) {
+                                self.vals.insert(v, Val::Missing(OTHER));
+                                self.stale.insert(v);
+                            }
+                        }
+                    }
+                }
+                return Ok(());
+            }
             return Err("a descriptor read only as data");
         };
         let src = Source::Loaded { load: site, first };
@@ -6197,6 +6250,37 @@ impl<'a> Lower<'a> {
         let v = self.as_int(f);
         self.strides.insert(key, v);
         Ok(Some(v))
+    }
+
+    /// The size word of the texture view at the heap slot the scalar load
+    /// `load` reads (`SLOT_SIZES`): width less one in bits 0-13, height less
+    /// one in bits 14-27, first mip in bits 28-31; 0 for anything else.
+    fn slot_size(&mut self, load: Site) -> Result<V, Why> {
+        use super::shader::{SLOT_STRIDES, SLOT_STRIDES_COUNT};
+        let c = self.cur;
+        let slot = self.heap_index(load, 0, false)?;
+        let last = self.s.m.i32(SLOT_STRIDES_COUNT - 1);
+        let i32t = self.s.t.i32;
+        let slot = self.s.op(c, "binary.i32", Attr::ReadNone, i32t, 40, &[slot, last]);
+        self.s.m.tag(slot, Tag::Clamp);
+        let half = self.s.m.i32(SLOT_STRIDES_COUNT);
+        let slot = self.s.m.bin(c, Bin::Add, slot, half);
+        let two = self.s.m.i32(2);
+        let byte = self.s.m.bin(c, Bin::Shl, slot, two);
+        let h = self.s.root_srv_handle(SLOT_STRIDES);
+        let iu = self.s.m.undef(self.s.t.i32);
+        let mask = self.s.m.i8(1);
+        let align = self.s.m.i32(4);
+        let r = self.s.op(
+            c,
+            "rawBufferLoad.f32",
+            Attr::ReadOnly,
+            self.s.t.res_ret,
+            139,
+            &[h, byte, iu, mask, align],
+        );
+        let f = self.s.m.extract(c, r, 0);
+        Ok(self.as_int(f))
     }
 
     /// The heap index of a descriptor that may differ between lanes,

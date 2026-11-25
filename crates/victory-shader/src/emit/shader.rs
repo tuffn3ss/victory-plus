@@ -24,7 +24,12 @@ pub const ROOT_CBV_SPACE: u32 = 1;
 /// root SRV also tells the host that the buffer views of the whole heap
 /// must be ready when it runs, not only those its tables name.
 pub const SLOT_STRIDES: u8 = 255;
-/// Dwords of the [`SLOT_STRIDES`] buffer: heap indices are clamped to it.
+/// Heap slots of the [`SLOT_STRIDES`] buffer: heap indices are clamped to
+/// it. The buffer holds twice as many dwords: after the strides, dword
+/// `SLOT_STRIDES_COUNT + i` is the size of the texture view at heap slot
+/// `i` (`SLOT_SIZES`: width less one in bits 0-13, height less one in bits
+/// 14-27, first mip in bits 28-31; 0: none or not a texture), for programs
+/// that read a texture descriptor's size fields as numbers.
 pub const SLOT_STRIDES_COUNT: u32 = 1 << 21;
 
 /// Title memory by address (`resource::MEMORY`): console code reads and

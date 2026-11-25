@@ -1702,6 +1702,11 @@ fn host_texture(
     texture
 }
 
+/// A texture's width and height; `None` for buffers.
+pub(crate) fn texture_size(this: This) -> Option<(u64, u32)> {
+    texture_memory(this).map(|(_, d)| (d.width, d.height))
+}
+
 /// A texture's console memory and description; `None` for buffers.
 pub(crate) fn texture_memory(this: This) -> Option<(*const u8, ResourceDesc)> {
     if this.is_null() {
