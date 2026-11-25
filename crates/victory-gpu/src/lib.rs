@@ -16,6 +16,8 @@
 //! `present` (swap chain).
 
 #[cfg(windows)]
+mod ambient;
+#[cfg(windows)]
 mod arena;
 #[cfg(all(windows, feature = "diagnostics"))]
 mod capture;

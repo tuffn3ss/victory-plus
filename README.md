@@ -17,7 +17,7 @@ Windows 11 Pro. The Series X profile is used throughout.
 | | On this PC |
 |---|---|
 | How far | Playable in the first gameplay scene (the prologue): the character moves, and the HUD, pause menu and pad input work. Not further into the story yet. |
-| Picture | Lit, with textures, characters and sky. Anything the sun does not hit directly is black, because the game's ray-traced lighting is not emulated yet (same as victory-fork). |
+| Picture | Lit, with textures, characters and sky, and indoor rooms and shade no longer black: a constant ambient light stands in for the game's ray-traced lighting, which is not emulated yet. Some faces turned away from lamps are still dark. |
 | Frame rate | 6 to 8 fps in the first rooms (155 to 160 ms a frame), with the switches under "Running it". |
 | Freezes while moving | Far fewer. Frames over one second fell from 47 to 11 and 25 in 5-minute runs (see below). |
 | Stability | No crash in the recent 5-minute test runs. One earlier run lost the GPU device when Windows ran out of commit memory, so give Windows a large page file. |
@@ -38,6 +38,15 @@ Windows 11 Pro. The Series X profile is used throughout.
   | before | 47 | 698 ms |
   | `VICTORY_MEMORY_FLOOR_GB=14`, two runs | 11 and 25 | 192 and 357 ms |
 
+- **Ambient light in the shade** (on by default; `VICTORY_AMBIENT=off`
+  turns it off, `VICTORY_AMBIENT=<level>` sets it, 0.6 by default). Ported
+  from [Belobug's VIctory-Belobug-AMD](https://github.com/Belobug/VIctory-Belobug-AMD).
+  The game's indirect light comes from ray tracing, which does not run yet,
+  so everything the sun did not reach was black. Right after the game
+  resolves that light, it is replaced by a constant, with less of it in
+  creases and under objects, and glossy surfaces no longer reflect the open
+  sky indoors. No frame-rate cost measured: 140 to 160 ms a frame in the
+  cell. With `VICTORY_BVH_BUILDER=1` it stays off unless a level is set.
 - **Texture staging from our own upload heaps** (on by default;
   `VICTORY_STAGING_ARENA=0` turns it off). Staging buffers are slots of
   64 MiB upload heaps and are not created and freed one by one. Upload
@@ -87,6 +96,9 @@ pause
 - **[victory-fork](https://github.com/fxceless/victory-fork)** by hyphennn is
   nearly all of what runs here: its rendering and speed work. Its README has
   the full history of that work and every switch it adds.
+- **[VIctory-Belobug-AMD](https://github.com/Belobug/VIctory-Belobug-AMD)** by
+  Belobug wrote the ambient light in `crates/victory-gpu/src/ambient.rs`,
+  ported here without its unfinished sky-following part.
 - **[VIctory](https://github.com/Marvisak/VIctory)** by Marvisak and its
   contributors is the base of both: the loader, the runtime services, the
   Direct3D 12 back end and the shader recompiler. Its README covers setup,

@@ -67,6 +67,13 @@ pub(crate) struct Shader {
     /// ([`Shader::walks`]).
     #[cfg(windows)]
     walks: OnceLock<bool>,
+    /// Its result gets the ambient light ([`crate::ambient::PROGRAM`]).
+    #[cfg(windows)]
+    pub(crate) resolves_light: bool,
+    /// It writes the title's reflections for the last time in a frame
+    /// ([`crate::ambient::REFLECTED`]).
+    #[cfg(windows)]
+    pub(crate) ends_reflections: bool,
 }
 
 impl std::fmt::Debug for Shader {
@@ -119,6 +126,14 @@ fn shader(stage: &'static str, bytes: &[u8]) -> Arc<Shader> {
                 translated: OnceLock::new(),
                 #[cfg(windows)]
                 walks: OnceLock::new(),
+                #[cfg(windows)]
+                resolves_light: bytes
+                    .windows(crate::ambient::PROGRAM.len())
+                    .any(|w| w == crate::ambient::PROGRAM),
+                #[cfg(windows)]
+                ends_reflections: bytes
+                    .windows(crate::ambient::REFLECTED.len())
+                    .any(|w| w == crate::ambient::REFLECTED),
             })
         })
         .clone()

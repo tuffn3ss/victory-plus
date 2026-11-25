@@ -2259,6 +2259,58 @@ impl State {
         // SAFETY: an open list with everything set.
         unsafe { list.list.Dispatch(x, y, z) };
         DISPATCHED.fetch_add(1, Ordering::Relaxed);
+        self.ambient(list, p);
+    }
+
+    /// After a dispatch of `p`: the ambient light (`crate::ambient`), if it
+    /// is the program that resolves the indirect light or the last that
+    /// writes reflections. If a pass was recorded, the list's heaps, root
+    /// signature and pipeline are ours, so the next draw or dispatch sets
+    /// the title's again.
+    fn ambient(&mut self, list: &HostList, p: &HostPipeline) {
+        let Some(stage) = p
+            .stages
+            .first()
+            .filter(|s| s.shader.resolves_light || s.shader.ends_reflections)
+        else {
+            return;
+        };
+        let view = |kind: ResourceType, (slot, offset): (u8, u32)| {
+            let u = stage.translated().used.iter().find(|u| {
+                u.kind == kind
+                    && u.root == RootType::Table
+                    && (u.slot, u.table_offset_dwords) == (slot, offset)
+            })?;
+            let Some(Root::Table(table)) = self.roots_ref(true).get(usize::from(u.slot)) else {
+                return None;
+            };
+            crate::descriptor::view(table + u64::from(u.table_offset_dwords) * 4)
+        };
+        let recorded = if stage.shader.resolves_light {
+            match view(ResourceType::Uav, crate::ambient::LIGHT) {
+                Some(View::Unordered(light, ..)) if light != 0 => {
+                    let depth = match view(ResourceType::Srv, crate::ambient::DEPTH) {
+                        Some(View::Shader(r, _)) if r != 0 => Some(r as This),
+                        _ => None,
+                    };
+                    crate::ambient::raise(list, light as This, depth)
+                }
+                _ => {
+                    once!("no ambient light: the light resolve's tables are not as expected");
+                    false
+                }
+            }
+        } else {
+            match view(ResourceType::Uav, crate::ambient::REFLECTIONS) {
+                Some(View::Unordered(r, ..)) if r != 0 => crate::ambient::hold(list, r as This),
+                _ => false,
+            }
+        };
+        if recorded {
+            self.host_pipeline = 0;
+            self.host_roots = [0; 2];
+            self.host_heaps = [0; 2];
+        }
     }
 
     /// What a draw or dispatch runs, for the device-removed report
@@ -3392,6 +3444,7 @@ impl State {
         // back (`crate::indirect`).
         if kind == DISPATCH {
             DISPATCHED.fetch_add(1, Ordering::Relaxed);
+            self.ambient(list, p);
         } else {
             DRAWN.fetch_add(1, Ordering::Relaxed);
         }
