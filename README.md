@@ -16,7 +16,7 @@ Windows 11 Pro. The Series X profile is used throughout.
 
 | | On this PC |
 |---|---|
-| How far | Through the prologue and out of the prison into the open world (the chase after it, at about 4 fps). The character moves, and the HUD, pause menu and pad input work. Outside, the card's memory fills and new textures wait, so parts of the scene can come out black or blurry. |
+| How far | Through the prologue and out of the prison into the open world (the chase after it, at about 4 fps). The character moves, and the HUD, pause menu and pad input work. Outside, the card's memory used to fill, so new textures waited and parts of the scene came out black or blurry. Texture levels on demand (below) leave about 4 GB more room. This is not yet tested outside. |
 | Picture | Lit, with textures, characters and sky, and indoor rooms and shade no longer black: a constant ambient light stands in for the game's ray-traced lighting, which is not emulated yet. Some faces turned away from lamps are still dark. |
 | Frame rate | 6 to 8 fps in the first rooms (155 to 160 ms a frame), with the switches under "Running it". |
 | Freezes while moving | Far fewer. Frames over one second fell from 47 to 11 and 25 in 5-minute runs (see below). |
@@ -38,6 +38,18 @@ Windows 11 Pro. The Series X profile is used throughout.
   | before | 47 | 698 ms |
   | `VICTORY_MEMORY_FLOOR_GB=14`, two runs | 11 and 25 | 192 and 357 ms |
 
+- **Texture levels on demand, on by default** (`VICTORY_LEVELS_ON_DEMAND=0`
+  turns it off; `VICTORY_LEVELS_MIN_KB`, 256 by default, sets the smallest
+  texture it covers). victory-fork's switch for this is off by default and
+  covers textures from 1 MB. The game streams texture detail in and holds
+  only some levels of most textures, but each host copy took card memory
+  for all of them. Now a texture gets memory only for the levels the game
+  holds. In two 5-minute runs in the prison on the RX 7800 XT, the card
+  held 8.9 GB with it and 12.8 GB without it (5.8 GB of levels left
+  unallocated). Texture passes that came up empty for lack of room fell
+  from 1,618 to none. Frame time was the same, about 145 ms. This is the
+  room the open world needs: before, it filled the card, and new textures
+  came out black or blurry.
 - **Ambient light in the shade** (on by default; `VICTORY_AMBIENT=off`
   turns it off, `VICTORY_AMBIENT=<level>` sets it, 0.6 by default). Ported
   from [Belobug's VIctory-Belobug-AMD](https://github.com/Belobug/VIctory-Belobug-AMD).

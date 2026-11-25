@@ -46,8 +46,11 @@
 //! Only for a texture the title places in memory and fills, two-dimensional,
 //! one layer, more than one level, of [`floor`] bytes or more, whose memory
 //! is not all its own when the host copy is made (`resource.rs` `hosted`);
-//! every other texture is made as before. Off unless
-//! `VICTORY_LEVELS_ON_DEMAND=1`.
+//! every other texture is made as before. On by default;
+//! `VICTORY_LEVELS_ON_DEMAND=0` turns it off. (On an RX 7800 XT with 16 GB,
+//! two minutes into the world: the card at 9.0 to 9.3 GB with it, from
+//! 256 KB up, against about 12.2 GB without it, and no texture refused for
+//! lack of room where 85 had been in three minutes.)
 
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
@@ -72,13 +75,13 @@ const HEAP_TILES: u32 = 1024;
 pub(crate) static STATS: [AtomicU64; 11] = [const { AtomicU64::new(0) }; 11];
 
 /// Whether textures are made this way: the switch
-/// (`VICTORY_LEVELS_ON_DEMAND=1`; off by default), and a card that reads
+/// (on unless `VICTORY_LEVELS_ON_DEMAND=0`), and a card that reads
 /// zeros from, and drops writes to, levels without memory (tiled resources
 /// tier 2).
 pub(crate) fn wanted() -> bool {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *ON.get_or_init(|| {
-        if !std::env::var_os("VICTORY_LEVELS_ON_DEMAND").is_some_and(|v| v == "1") {
+        if std::env::var_os("VICTORY_LEVELS_ON_DEMAND").is_some_and(|v| v == "0") {
             return false;
         }
         let Some(host) = host() else {
@@ -99,7 +102,7 @@ pub(crate) fn wanted() -> bool {
             tier,
             on,
             floor_kb = floor() >> 10,
-            "host copies of title textures take the card's memory level by level (VICTORY_LEVELS_ON_DEMAND=1)"
+            "host copies of title textures take the card's memory level by level (VICTORY_LEVELS_ON_DEMAND=0: off)"
         );
         on
     })
@@ -108,13 +111,14 @@ pub(crate) fn wanted() -> bool {
 fn parse_floor(value: Option<&str>) -> u64 {
     value
         .and_then(|v| v.trim().parse::<u64>().ok())
-        .map_or(1 << 20, |kb| kb.max(64).saturating_mul(1024))
+        .map_or(256 << 10, |kb| kb.max(64).saturating_mul(1024))
 }
 
-/// The bytes from which a texture is made this way: a megabyte, or
-/// `VICTORY_LEVELS_MIN_KB`. (The accounting of run 189: the levels not
-/// held are 1.9 MB a copy on some 1,600 copies; a 512x512 texture has six
-/// tiles at most, and most of the calls for nothing.)
+/// The bytes from which a texture is made this way: 256 KB, or
+/// `VICTORY_LEVELS_MIN_KB`. (From a megabyte up, 1.1 GB of the other
+/// host copies were still levels the title did not hold, on some 3,000
+/// copies; from 256 KB up, 132 MB, for 18,500 tile mapping calls in a
+/// three-minute run that took 0.4 s in all.)
 pub(crate) fn floor() -> u64 {
     static BYTES: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
     *BYTES.get_or_init(|| parse_floor(std::env::var("VICTORY_LEVELS_MIN_KB").ok().as_deref()))
@@ -1473,7 +1477,7 @@ void look() {
 
     #[test]
     fn floor_saturates_instead_of_wrapping() {
-        assert_eq!(parse_floor(None), 1 << 20);
+        assert_eq!(parse_floor(None), 256 << 10);
         assert_eq!(parse_floor(Some("0")), 64 << 10);
         assert_eq!(parse_floor(Some("2048")), 2048 << 10);
         assert_eq!(parse_floor(Some(&(1u64 << 54).to_string())), u64::MAX);
