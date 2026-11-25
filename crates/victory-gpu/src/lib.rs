@@ -21,6 +21,10 @@ mod arena;
 mod capture;
 #[cfg(windows)]
 mod cardmeter;
+#[cfg(all(windows, feature = "diagnostics"))]
+mod renderdoc;
+#[cfg(all(windows, feature = "diagnostics"))]
+mod shot;
 pub mod console;
 #[cfg(all(windows, feature = "diagnostics"))]
 mod copystat;
