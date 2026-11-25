@@ -27,6 +27,8 @@ pub mod device;
 #[cfg(windows)]
 mod drvwatch;
 #[cfg(windows)]
+mod fpsbox;
+#[cfg(windows)]
 mod spread;
 #[cfg(windows)]
 mod draw;

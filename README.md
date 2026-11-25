@@ -100,6 +100,19 @@ with all of them, from about 120 ms in the morning. Still far from the console's
   2560x1440 as translated. With every pass of the layer's gone, this
   scene would still be near 20 frames a second on this card: the
   translated shaders have to get cheaper too.
+- The frame rate is drawn into the top left corner of every frame shown
+  (`fpsbox.rs`; `VICTORY_FPS_COUNTER=0`: not): the window's caption has
+  it too, but a capture of the picture does not carry the caption.
+- `VICTORY_COPY_CHANGED=1` (off by default): a refresh of a copy in the
+  card's memory sends on only the 256-byte chunks that differ from the
+  copy's CPU side. The layer's sync lists on the card fall from 12 to 8
+  ms a frame, the submit thread pays 3.6 ms for the compare and is then
+  the limit: no net gain yet.
+- HONEST LIMIT OF ALL THE ABOVE: those numbers are the scene standing
+  still. While the camera moves the title streams assets, and about half
+  the time goes to frames of ~490 ms in which the card is idle for ~330
+  ms: some 850 remaps of title memory, 260 texture uploads and 450 disk
+  reads in one frame. That is the next thing to measure and cut.
 - Measured and found to give nothing (switches left in, off):
   `VICTORY_REFRESH_ONCE`, `VICTORY_ASYNC_PRESENT`, `VICTORY_VIEW_KNOWN`,
   `VICTORY_SPREAD`, `VICTORY_QUEUE2=3`, `VICTORY_WINDOW_JUMP`. Each has an
