@@ -104,6 +104,13 @@ pub(crate) static SPARE_STATS: [std::sync::atomic::AtomicU64; 2] = [const { std:
 /// `VICTORY_STAGING_POOL=0`: made and freed each time, as before.
 fn staging_buffer(host: &crate::host::Host, total: u64) -> Option<(ID3D12Resource, *mut u8, u64)> {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    // Slots of our own upload heaps first (`crate::arena`): not pooled
+    // here, the slot goes back when the buffer is destroyed.
+    if crate::arena::on()
+        && let Some((buffer, data)) = crate::arena::staging(&host.device, total)
+    {
+        return Some((buffer, data, 0));
+    }
     let size = total.max(64 << 10).next_power_of_two();
     if size > SPARE_MOST.1 || !*ON.get_or_init(|| std::env::var_os("VICTORY_STAGING_POOL").is_none_or(|v| v != "0")) {
         return host.upload_buffer(total).map(|(buffer, data)| (buffer, data, 0));
