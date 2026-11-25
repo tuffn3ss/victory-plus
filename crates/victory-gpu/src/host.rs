@@ -205,6 +205,41 @@ fn sweep() {
     crate::shadow::let_go_idle();
     crate::texture::let_go_idle();
     crate::resource::let_go_idle();
+    status(now);
+}
+
+/// Every 30 seconds, in every build: the card's memory, the textures
+/// refused for lack of room on it, and the ambient light's passes, each
+/// since the line before. Enough to tell, from a player's log, whether a
+/// scene that went black or blurry had a full card or no ambient light.
+fn status(now: u64) {
+    use std::sync::atomic::AtomicU64;
+    static LAST: AtomicU64 = AtomicU64::new(0);
+    static SEEN: [AtomicU64; 3] = [const { AtomicU64::new(0) }; 3];
+    let last = LAST.load(Ordering::Relaxed);
+    if last == 0 {
+        LAST.store(now, Ordering::Relaxed);
+        return;
+    }
+    if now < last + 30_000 {
+        return;
+    }
+    LAST.store(now, Ordering::Relaxed);
+    let totals = [
+        crate::draw::HEAP_TEXTURES_FULL.load(Ordering::Relaxed),
+        crate::ambient::PASSES[0].load(Ordering::Relaxed),
+        crate::ambient::PASSES[1].load(Ordering::Relaxed),
+    ];
+    let [full, lit, unlit] = [0, 1, 2].map(|i| totals[i] - SEEN[i].swap(totals[i], Ordering::Relaxed));
+    let card = host().and_then(|h| h.video_memory_groups());
+    let [budget, used, shared] = card.map_or([0; 3], |[own, pc]| [own[0] >> 20, own[1] >> 20, pc[1] >> 20]);
+    tracing::info!(
+        "status at {:.0} s, frame {}: the card {used} of {budget} MB ({}), {shared} MB of the PC's memory shared with it; \
+         in the last 30 s, texture passes that made none for lack of room {full}, ambient light passes {lit} (left out {unlit})",
+        now as f64 / 1000.0,
+        crate::frame::current(),
+        if crate::resource::room() { "room for textures" } else { "full: new textures wait" },
+    );
 }
 
 /// Drops `object` once every submission running now has finished: at once

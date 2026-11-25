@@ -16,7 +16,7 @@ Windows 11 Pro. The Series X profile is used throughout.
 
 | | On this PC |
 |---|---|
-| How far | Playable in the first gameplay scene (the prologue): the character moves, and the HUD, pause menu and pad input work. Not further into the story yet. |
+| How far | Through the prologue and out of the prison into the open world (the chase after it, at about 4 fps). The character moves, and the HUD, pause menu and pad input work. Outside, the card's memory fills and new textures wait, so parts of the scene can come out black or blurry. |
 | Picture | Lit, with textures, characters and sky, and indoor rooms and shade no longer black: a constant ambient light stands in for the game's ray-traced lighting, which is not emulated yet. Some faces turned away from lamps are still dark. |
 | Frame rate | 6 to 8 fps in the first rooms (155 to 160 ms a frame), with the switches under "Running it". |
 | Freezes while moving | Far fewer. Frames over one second fell from 47 to 11 and 25 in 5-minute runs (see below). |
@@ -60,6 +60,15 @@ Windows 11 Pro. The Series X profile is used throughout.
 - **A switch set measured on AMD.** `VICTORY_COPY_CHANGED=1` takes the frame
   from 167 to 159 ms on the RX 7800 XT (on victory-fork's RTX 4070 it gave no
   net gain).
+- **Upstream VIctory's audio fixes** (eight commits by AnoHunted, Maraco91,
+  tedin7, TG0000, heromike405-arch and divyeshganta), which victory-fork does
+  not have yet. Among them: an XMA stream that loops with its read block past
+  the end of its ring no longer keeps its voice, and the audio lock, filling
+  forever, which silenced all sound.
+- **A status line every 30 seconds in every build**: the card's memory and
+  budget, textures refused for lack of room on the card, and the ambient
+  light's passes. It tells from a player's log whether a scene that went
+  black or blurry had a full card.
 - victory-fork's new commits, merged as they land.
 
 ## Running it

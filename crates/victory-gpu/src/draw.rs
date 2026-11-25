@@ -2297,6 +2297,7 @@ impl State {
                 }
                 _ => {
                     once!("no ambient light: the light resolve's tables are not as expected");
+                    crate::ambient::PASSES[1].fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                     false
                 }
             }

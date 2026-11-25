@@ -338,8 +338,16 @@ fn uav_barrier(list: &ID3D12GraphicsCommandList) {
 /// program that wrote it. Whether it recorded anything (the list's
 /// bindings are then ours).
 pub(crate) fn raise(list: &HostList, light: This, depth: Option<This>) -> bool {
-    record(list, light, depth, 0.0)
+    let recorded = record(list, light, depth, 0.0);
+    PASSES[usize::from(!recorded)].fetch_add(1, Ordering::Relaxed);
+    recorded
 }
+
+/// Light resolves the ambient light was recorded after, and those it was
+/// not (no level, a format or view it does not take), for the status line
+/// (`crate::host::status`).
+pub(crate) static PASSES: [std::sync::atomic::AtomicU64; 2] =
+    [const { std::sync::atomic::AtomicU64::new(0) }; 2];
 
 /// Holds the reflections in `image` to a part of the ambient light, in
 /// `list`, after the program that wrote them last. Whether it recorded
