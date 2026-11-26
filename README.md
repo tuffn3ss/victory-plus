@@ -1,10 +1,12 @@
 # VIctory Plus
 
-VIctory Plus is a build of [avatarmanz's VIctory-7900XTX](https://github.com/avatarmanz/VIctory-7900XTX),
-which grew out of [hyphennn's victory-fork](https://github.com/fxceless/victory-fork),
-itself a fork of [VIctory](https://github.com/Marvisak/VIctory). It is tuned on
-an AMD Radeon RX 7800 XT with 16 GB and a 32 GB PC. It follows
-VIctory-7900XTX and adds a few fixes of its own.
+VIctory Plus is optimized with the engine code of
+[avatarmanz's VIctory-7900XTX](https://github.com/avatarmanz/VIctory-7900XTX),
+which grew out of [hyphennn's victory-fork](https://github.com/fxceless/victory-fork)
+and [VIctory](https://github.com/Marvisak/VIctory). On top of it, Plus adds a
+memory floor against freezes while moving, a status line in the log and an
+upstream kernel fix, with measurements from an AMD Radeon RX 7800 XT with
+16 GB on a 32 GB PC.
 
 **This repository contains no game files, code or assets.** You need your own
 copy of the game. It is not affiliated with or endorsed by the game's
