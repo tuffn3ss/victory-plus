@@ -12,17 +12,18 @@ upstream kernel fix, with measurements from an AMD Radeon RX 7800 XT with
 copy of the game. It is not affiliated with or endorsed by the game's
 developer or publisher.
 
-## Status (2026-11-25)
+## Status (2026-11-26)
 
 Tested on one PC: AMD Radeon RX 7800 XT 16 GB, AMD Ryzen 5 7600X, 32 GB RAM,
-Windows 11 Pro. The Series X profile is used throughout.
+Windows 11 Pro. Measured in the boat scene the save loads into, Series S
+profile, with the switches under "Running it".
 
 | | On this PC |
 |---|---|
 | How far | Through the prologue and out of the prison into the open world. The character moves, and the HUD, pause menu and pad input work. |
-| Frame rate | 16 fps in the prison (62 ms a frame) with the switches under "Running it", against 6 to 7 fps (145 ms) on victory-fork. The first run of a new build is far slower while the driver makes pipelines; from the second run on it is not. |
+| Frame rate | About 19 fps (50 to 56 ms a frame). As a Series X without VIctory-7900XTX's renderer patches it was 14 fps (71 ms); on victory-fork 6 to 7 fps. The first runs of a new build are far slower and hitch while the driver makes pipelines. |
 | Picture | Lit, with textures, characters and sky. A stand-in light fills the shade, since the game's ray-traced lighting is not emulated yet. |
-| Memory | About 36 GB of private memory, 14 GB of it in RAM: give Windows a page file of 48 GB or more. The card held 13.4 of its 14.5 GB budget in the prison. |
+| Memory | 18.6 GB in RAM and 28.4 GB of private memory, 12.1 GB on the card. As a Series X: 20.5 GB, 31.3 GB, and a full card (14.0 of 14.6 GB). Give Windows a page file of 48 GB or more. |
 | Stability | No crash in the recent 5-minute test runs. |
 
 ## What VIctory Plus adds to VIctory-7900XTX
@@ -45,6 +46,13 @@ Windows 11 Pro. The Series X profile is used throughout.
   With VIctory-7900XTX's 8, the intro animation was shown out of order: in a
   fast capture of the screen, about one moving frame in four went back to
   the picture two frames before. With 1 it does not.
+- **Keyboard and mouse laid out as in PC games**, with the mouse as the
+  camera (below, under "Keyboard and mouse").
+- **The Series S profile and VIctory-7900XTX's renderer patches** in the
+  `.bat` below. Of what was measured for memory, the Series S profile is the
+  one that cut it (3 GB of private memory, 1.5 GB on the card); the rest is
+  the game's own memory and the copies of it the layer needs while the card
+  and the CPU share memory as on the console.
 - **A kernel fix** from upstream VIctory (Maraco91): a title image's file
   name that fits clears the last error.
 
@@ -92,11 +100,56 @@ set "VICTORY_THIN=1"
 rem 8, as VIctory-7900XTX sets it, shows the intro animation out of order (it jumps back and forth).
 set "VICTORY_JOIN_PARTS=1"
 set "VICTORY_UPLOAD_AHEAD=1"
+rem VIctory-7900XTX's renderer patches (off there by default).
+set "VICTORY_PORT_CONSTANTS=1"
+set "VICTORY_PORT_DESCRIPTORS=1"
+set "VICTORY_PORT_CBV=1"
+set "VICTORY_PORT_GUARD=1"
+set "VICTORY_PORT_JOURNAL=1"
 rem Keeps 14 GB of the emulator in RAM. On a PC with less than 32 GB, lower it.
 set "VICTORY_MEMORY_FLOOR_GB=14"
-target\diag\victory.exe run "<your game folder>\<the title's exe>" --execute
+rem Series S: 1080p, faster, less memory, a softer picture. Leave it out for Series X.
+target\diag\victory.exe run "<your game folder>\<the title's exe>" --execute --console series-s
 pause
 ```
+
+### Keyboard and mouse
+
+With no pad connected (or alongside one), the keyboard and mouse act as a
+pad, laid out the way PC games usually are. Click in the picture to let the
+mouse turn the camera. Hold Alt to get the pointer back (to move, resize or
+maximize the window); it also comes back when you switch to another window.
+
+| Key | Pad | On foot |
+|---|---|---|
+| W A S D | left stick | move |
+| Mouse | right stick | camera, aim |
+| Left button | right trigger | shoot |
+| Right button | left trigger | aim |
+| Shift | A | sprint |
+| Space | X | jump |
+| R | B | reload, melee |
+| F | Y | get in or out of a car |
+| Q | right shoulder | cover |
+| Tab | left shoulder | weapon wheel |
+| Ctrl | left stick click | crouch |
+| C, middle button | right stick click | look behind |
+| E | d-pad right | the prompt's action |
+| Arrow keys | d-pad | phone and the rest |
+| Esc | Menu | pause |
+| V | View | camera mode |
+| Enter, Backspace | A, B | menus |
+
+**Caps Lock switches the driving keys** on and off, since a pad cannot
+say whether you are in a car: W is the gas (right trigger), S the brake and
+reverse (left trigger) and Space the handbrake (right shoulder). Press it
+when you get in and again when you get out.
+
+What each pad button does is the game's choice; the "On foot" column is the
+series' usual pad layout and may differ in places. `VICTORY_MOUSE_SENS`
+(1 by default) sets how fast the mouse turns the camera,
+`VICTORY_MOUSE_INVERT=1` turns up and down around, and `VICTORY_MOUSE=0`
+leaves the mouse alone.
 
 `scripts\play.ps1` from VIctory-7900XTX sets the same switches but the
 memory floor, and joins submissions (`VICTORY_JOIN_PARTS=8`).
