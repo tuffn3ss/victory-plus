@@ -15,15 +15,15 @@ developer or publisher.
 ## Status (2026-11-26)
 
 Tested on one PC: AMD Radeon RX 7800 XT 16 GB, AMD Ryzen 5 7600X, 32 GB RAM,
-Windows 11 Pro. Measured in the boat scene the save loads into, Series S
+Windows 11 Pro. Measured in the boat scene the save loads into, Series X
 profile, with the switches under "Running it".
 
 | | On this PC |
 |---|---|
 | How far | Through the prologue and out of the prison into the open world. The character moves, and the HUD, pause menu and pad input work. |
-| Frame rate | About 19 fps (50 to 56 ms a frame). As a Series X without VIctory-7900XTX's renderer patches it was 14 fps (71 ms); on victory-fork 6 to 7 fps. The first runs of a new build are far slower and hitch while the driver makes pipelines. |
-| Picture | Lit, with textures, characters and sky. A stand-in light fills the shade, since the game's ray-traced lighting is not emulated yet. |
-| Memory | 18.6 GB in RAM and 28.4 GB of private memory, 12.1 GB on the card. As a Series X: 20.5 GB, 31.3 GB, and a full card (14.0 of 14.6 GB). Give Windows a page file of 48 GB or more. |
+| Frame rate | About 17 to 20 fps (57 ms a frame). Without VIctory-7900XTX's renderer patches it was 14 fps (71 ms); on victory-fork 6 to 7 fps. The first runs of a new build are far slower and hitch while the driver makes pipelines. |
+| Picture | Sharp at 1080p: the game renders at 2560x1440 and draws in 4K, shrunk to the window. Lit, with textures, characters and sky. A stand-in light fills the shade, since the game's ray-traced lighting is too slow to use here. |
+| Memory | 30.7 GB of private memory, 13.1 GB on the card. As a Series S (`--console series-s`): 27.3 GB and 11.8 GB at the same speed, but rendered at 1280x720 and soft. Give Windows a page file of 48 GB or more. |
 | Stability | No crash in the recent 5-minute test runs. |
 
 ## What VIctory Plus adds to VIctory-7900XTX
@@ -48,11 +48,23 @@ profile, with the switches under "Running it".
   the picture two frames before. With 1 it does not.
 - **Keyboard and mouse laid out as in PC games**, with the mouse as the
   camera (below, under "Keyboard and mouse").
-- **The Series S profile and VIctory-7900XTX's renderer patches** in the
-  `.bat` below. Of what was measured for memory, the Series S profile is the
-  one that cut it (3 GB of private memory, 1.5 GB on the card); the rest is
-  the game's own memory and the copies of it the layer needs while the card
-  and the CPU share memory as on the console.
+- **Belobug's AMD fixes** from
+  [VIctory-Belobug-AMD](https://github.com/Belobug/VIctory-Belobug-AMD)
+  (branch `rx9070xt`): the card's memory let go sooner when it fills,
+  dynamic descriptor slots freed when a submission lands, and textures the
+  game writes uploaded in order with the frame that uses them, against
+  flicker and frames shown out of order.
+- **VIctory-7900XTX's renderer patches**, textures that wait for their data
+  looked at again every half second (`VICTORY_TEXTURE_LOOK_MS=500`; it was
+  up to 13 to 18 seconds at this frame rate), and pipelines made before the
+  run (`victory warm --used`, with `VICTORY_PIPELINE_BOOK=1` so runs write
+  down what they make) instead of in the middle of play, all in the `.bat`
+  below.
+- **Measured and left out for the picture:** full 1080p as a Series S (the
+  game stops itself at start), `VICTORY_OUTPUT=1920x1080` as a Series X
+  (sharp, but the menus and captions stay laid out for 4K: twice too big
+  and cut off), and the game's ray-traced light (`VICTORY_BVH_BUILDER=1`:
+  102 ms a frame instead of 56, and 3 GB more memory).
 - **A kernel fix** from upstream VIctory (Maraco91): a title image's file
   name that fits clears the last error.
 
@@ -106,10 +118,14 @@ set "VICTORY_PORT_DESCRIPTORS=1"
 set "VICTORY_PORT_CBV=1"
 set "VICTORY_PORT_GUARD=1"
 set "VICTORY_PORT_JOURNAL=1"
+set "VICTORY_TEXTURE_LOOK_MS=500"
 rem Keeps 14 GB of the emulator in RAM. On a PC with less than 32 GB, lower it.
 set "VICTORY_MEMORY_FLOOR_GB=14"
-rem Series S: 1080p, faster, less memory, a softer picture. Leave it out for Series X.
-target\diag\victory.exe run "<your game folder>\<the title's exe>" --execute --console series-s
+rem Runs write down the pipelines they make; warm makes the new ones before the run.
+set "VICTORY_PIPELINE_BOOK=1"
+target\diag\victory.exe warm --used
+rem Add --console series-s for 3.4 GB less memory and a softer picture.
+target\diag\victory.exe run "<your game folder>\<the title's exe>" --execute
 pause
 ```
 
@@ -165,6 +181,8 @@ memory floor, and joins submissions (`VICTORY_JOIN_PARTS=8`).
 - **[VIctory](https://github.com/Marvisak/VIctory)** by Marvisak and its
   contributors is the base of all of them: the loader, the runtime services,
   the Direct3D 12 back end and the shader recompiler.
+- **[VIctory-Belobug-AMD](https://github.com/Belobug/VIctory-Belobug-AMD)**
+  by Belobug: the AMD fixes above, taken as his two commits.
 - VIctory-7900XTX also carries work from
   [DexNom](https://github.com/DexNom/VIctory),
   [Belobug](https://github.com/Belobug/VIctory-Belobug-AMD) and romainhedouin,
