@@ -1,117 +1,120 @@
-# VIctory on an RX 7900 XTX
+# VIctory Plus
 
-A fork of [VIctory](https://github.com/Marvisak/VIctory), a compatibility layer
-that runs an Xbox Series title natively on Windows from files the user supplies.
-This one is about **speed on AMD RDNA 3**: the world at 30 frames a second on
-one PC, without giving up the picture. It is not there yet.
+VIctory Plus is a build of [avatarmanz's VIctory-7900XTX](https://github.com/avatarmanz/VIctory-7900XTX),
+which grew out of [hyphennn's victory-fork](https://github.com/fxceless/victory-fork),
+itself a fork of [VIctory](https://github.com/Marvisak/VIctory). It is tuned on
+an AMD Radeon RX 7800 XT with 16 GB and a 32 GB PC. It follows
+VIctory-7900XTX and adds a few fixes of its own.
 
 **This repository contains no game files, code or assets.** You need your own
-copy of the game. It is not affiliated with or endorsed by the game's developer
-or publisher.
+copy of the game. It is not affiliated with or endorsed by the game's
+developer or publisher.
 
-## Where it stands (2026-11-25)
+## Status (2026-11-25)
 
-Tested on one machine only: Windows 11, Intel i9-12900K, 64 GB RAM, Radeon
-RX 7900 XTX, 1440p, the Series X profile.
+Tested on one PC: AMD Radeon RX 7800 XT 16 GB, AMD Ryzen 5 7600X, 32 GB RAM,
+Windows 11 Pro. The Series X profile is used throughout.
 
-| | |
+| | On this PC |
 |---|---|
-| Menus, videos, loading screens | 30 fps |
-| Prologue, indoors | 50-75 ms a frame (13-20 fps) |
-| First mission with the boat | 46-53 ms (19-22 fps) |
-| Street chase with many cars and people | 100-165 ms (6-10 fps), single frames far longer |
-| Outdoors on foot, the camp | 60-90 ms |
-| Flying | 42-57 ms |
-| Longest session so far | 41 minutes, no crash |
-| Memory | 40-46 GB of private memory: **64 GB of RAM recommended** |
+| How far | Through the prologue and out of the prison into the open world. The character moves, and the HUD, pause menu and pad input work. |
+| Frame rate | 16 fps in the prison (62 ms a frame) with the switches under "Running it", against 6 to 7 fps (145 ms) on victory-fork. The first run of a new build is far slower while the driver makes pipelines; from the second run on it is not. |
+| Picture | Lit, with textures, characters and sky. A stand-in light fills the shade, since the game's ray-traced lighting is not emulated yet. |
+| Memory | About 36 GB of private memory, 14 GB of it in RAM: give Windows a page file of 48 GB or more. The card held 13.4 of its 14.5 GB budget in the prison. |
+| Stability | No crash in the recent 5-minute test runs. |
 
-It started at 280 ms a frame in the same scenes two days earlier.
+## What VIctory Plus adds to VIctory-7900XTX
 
-What is known to be wrong:
+- **Memory floor** (`VICTORY_MEMORY_FLOOR_GB`, off unless set). The freezes
+  while moving came from Windows trimming the emulator's working set when
+  free RAM runs low. Every remap of the game's memory then waits on the page
+  tables: 0.4 to 1 ms each instead of about 2 µs, and a frame that streams
+  textures does hundreds of them. The switch asks Windows for a hard minimum
+  working set of that many GB. If Windows refuses, the layer steps down 2 GB
+  at a time to 4 GB and logs what it got. On victory-fork, frames over one
+  second fell from 47 to 11 and 25 in 5-minute runs with it at 14.
+- **A status line every 30 seconds**: the card's memory and budget, and
+  textures refused for lack of room on the card. It tells from a player's
+  log whether a scene that went black or blurry had a full card.
+- **A kernel fix** from upstream VIctory (Maraco91): a title image's file
+  name that fits clears the last error.
 
-- Trees, plants and far buildings flicker outdoors in some places.
-- Rooms with little direct light are too dark without `-RayTracing`.
-- Textures of what just came into view appear late while the title streams.
-- The first run with a new driver or a new build stutters while the driver makes
-  pipelines (`victory warm` makes them ahead).
-- Recording a frame in the world makes the title's own watchdog end it.
+Measured and left out: texture levels on demand (`VICTORY_LEVELS_ON_DEMAND=1`)
+saved 3.9 GB of the card on victory-fork, but here it made about 11 GB of
+upload buffers more and took the frame from 62 to 380 ms. It stays off, as in
+VIctory-7900XTX.
 
-## How to run it
+What VIctory-7900XTX itself changed, and why, is in
+[docs/README-avatarmanz.md](docs/README-avatarmanz.md) and
+[docs/findings.md](docs/findings.md); victory-fork's own README is in
+[docs/README-fxceless.md](docs/README-fxceless.md).
 
-You need Windows 10/11 x64, a CPU with AVX2, a Direct3D 12 GPU with shader
-model 6.6 and mesh shaders, Rust (the toolchain is pinned), the MSVC build
-tools, and your own dump of the title.
+## Running it
 
-```powershell
-git clone https://github.com/avatarmanz/VIctory-7900XTX
-cd VIctory-7900XTX
-copy victory.example.toml victory.toml      # then set your paths, outside this folder
+Requirements are as upstream: Windows 10/11 x64, a CPU with AVX2, a Direct3D
+12 GPU with shader model 6.6 and mesh shaders, Rust, and the MSVC build tools.
+
+```bat
 cargo build --locked --profile diag -p victory --features diagnostics
-scripts\play.ps1 -Exe <path of your copy's executable>
 ```
 
-`scripts\play.ps1 -Safe` leaves out the newest, faster ways; try it first when
-something is wrong. `-RayTracing` turns the title's ray-traced indirect light on.
+Then save this as a `.bat` file and run it:
 
-Before the first run, ahead of time (both can be stopped and go on later):
-
-```powershell
-target\diag\victory.exe shaders <the shader archives>   # every shader translated, minutes
-target\diag\victory.exe warm --used                     # pipelines earlier runs drew with, for a new driver or build
+```bat
+@echo off
+cd /d <the folder you cloned victory-plus into>
+set "VICTORY_TEXTURE_NO_WAIT=1"
+set "VICTORY_RELAY=2"
+set "VICTORY_WIDE_BACK=1"
+set "VICTORY_CARD_REHASH_RUNS=1"
+set "VICTORY_JOIN_COPIES=1"
+set "VICTORY_INDIRECT_WINDOW=1"
+set "VICTORY_RELAY_COPY=1"
+set "VICTORY_CARD_STEPS=2"
+set "VICTORY_INDIRECT_BATCH=2"
+set "VICTORY_MAP_THREADS=1"
+set "VICTORY_TITLE_PRIORITIES=0"
+set "VICTORY_CARD_AWAKE=1"
+set "VICTORY_SHOW_AFTER=1"
+set "VICTORY_AMBIENT=0.8"
+set "VICTORY_D3D12_DRED=light"
+set "VICTORY_SKIP_PIPELINES=none"
+set "VICTORY_THIN=1"
+set "VICTORY_JOIN_PARTS=8"
+set "VICTORY_UPLOAD_AHEAD=1"
+rem Keeps 14 GB of the emulator in RAM. On a PC with less than 32 GB, lower it.
+set "VICTORY_MEMORY_FLOOR_GB=14"
+target\diag\victory.exe run "<your game folder>\<the title's exe>" --execute
+pause
 ```
 
-Commands, debugging switches and upstream's own description:
-[docs/README-fxceless.md](docs/README-fxceless.md). Every `VICTORY_...` switch is
-described in a comment where it is read.
-
-## What is different here
-
-In short; the reasons and the measurements are in [docs/findings.md](docs/findings.md).
-
-- **List calls are written down, not carried out, on the title's threads**
-  (`VICTORY_THIN`): eight threads of ours translate them.
-- **Submissions are prepared by a thread of ours and joined**
-  (`VICTORY_ASYNC_SUBMIT`, `VICTORY_JOIN_PARTS`), with what can be spread over
-  threads spread: refreshes, compares (AVX2), descriptor records, landings.
-- **What shaders wrote comes back beside the write guards**, by the dwords that
-  changed, on a thread of its own (`VICTORY_RELAY`, `VICTORY_LAND`).
-- **Buffer fills that need bytes still on the card are done on the card**
-  (`VICTORY_CARD_STEPS`) instead of waiting for it.
-- **The title's writes are caught more cheaply**: one view opened at a fault,
-  blocks that rest, places in the title's code that look before they write.
-- **Textures go up on a copy queue of their own** and a slot shows one only after
-  its upload ran, which also ended a device loss that came every 15 minutes or so.
-- **Boats float**: textures that shaders write and the title's CPU reads go back
-  to title memory (from fxceless and Geckomacabre, on by default here).
-- **Frame record and replay** with per-pass times and shader variants compared
-  turn by turn ([docs/replay.md](docs/replay.md)).
+`scripts\play.ps1` from VIctory-7900XTX sets the same switches but the
+memory floor.
 
 ## Credits
 
-This is a tree of other people's work with more on top. The history is kept, and
-commits taken from elsewhere name the commit and its author.
-
+- **[VIctory-7900XTX](https://github.com/avatarmanz/VIctory-7900XTX)** by
+  avatarmanz is nearly all of what runs here: the list calls translated on
+  threads of their own, submissions prepared on a thread of their own, the
+  textures' own copy queue, and the rest of its speed work.
+- **[victory-fork](https://github.com/fxceless/victory-fork)** by hyphennn is
+  what VIctory-7900XTX and earlier VIctory Plus started from.
 - **[VIctory](https://github.com/Marvisak/VIctory)** by Marvisak and its
-  contributors: the loader, the runtime services, the Direct3D 12 back end and
-  the shader recompiler.
-- **[fxceless/victory-fork](https://github.com/fxceless/victory-fork)**: the fork
-  this one started from, and the people whose pull requests it carries.
-- **[DexNom/VIctory](https://github.com/DexNom/VIctory)**: ray tracing fixes,
-  cube gradients, sparse textures.
-- **[Belobug/VIctory-Belobug-AMD](https://github.com/Belobug/VIctory-Belobug-AMD)**:
-  the ambient light idea, pipeline workers, and work by romainhedouin.
-- **[FQY55kai/ZJOU-VICTORY](https://github.com/FQY55kai/ZJOU-VICTORY)**.
-- **[myokex/victory-amd](https://github.com/myokex/victory-amd)**: the guard over
-  every view of a page (with Spexivus, joroyt and tightfall), and Joshua Odom's
-  reads into title memory.
-- **Geckomacabre** and **cxy0072019-sketch**: the texture read-back.
-- **[XCL](https://github.com/ivall/xcl)** (GPL-2.0-only) was read for how the same
-  title behaves under another layer; no code of it is here.
-- This fork's changes were made with [Claude Code](https://claude.com/claude-code).
+  contributors is the base of all of them: the loader, the runtime services,
+  the Direct3D 12 back end and the shader recompiler.
+- VIctory-7900XTX also carries work from
+  [DexNom](https://github.com/DexNom/VIctory),
+  [Belobug](https://github.com/Belobug/VIctory-Belobug-AMD) and romainhedouin,
+  [ZJOU-VICTORY](https://github.com/FQY55kai/ZJOU-VICTORY),
+  [myokex](https://github.com/myokex/victory-amd) with Spexivus, joroyt and
+  tightfall, Joshua Odom, Geckomacabre and cxy0072019-sketch; each commit taken
+  names its source.
+- **[XCL](https://github.com/ivall/xcl)** by ivall and its contributors was a
+  reference for how the title behaves under another layer.
+- VIctory Plus's own changes were developed with
+  [Claude Code](https://claude.com/claude-code).
 
 ## License
 
-GPL-3.0-or-later, as VIctory. See [LICENSE](LICENSE); the one file that is not
-covered is named in [docs/asset-policy.md](docs/asset-policy.md).
-
-ZETTROX
+GPL-3.0-or-later. See [LICENSE](LICENSE); the one file that is not covered is
+named in [docs/asset-policy.md](docs/asset-policy.md).
