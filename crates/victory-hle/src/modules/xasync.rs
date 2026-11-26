@@ -545,6 +545,12 @@ fn status(block: *mut AsyncBlock) -> HRESULT {
     words(block).0.load(Ordering::Acquire) as u32 as i32
 }
 
+/// Whether the block's system area is all zero, as in a block not yet used.
+fn zeroed(block: *mut AsyncBlock) -> bool {
+    // SAFETY: the title's block, whose system area is ours to read.
+    unsafe { std::ptr::addr_of!((*block).internal).read_volatile() == [0; 4] }
+}
+
 fn release(block: *mut AsyncBlock) {
     // Unlocked before the provider runs: it may call back into us.
     let removed = lock(&CALLS).remove(&(block as usize));
@@ -563,8 +569,22 @@ pub fn XAsyncBegin(
     let Some(provider) = provider else {
         return E_INVALIDARG;
     };
-    if block.is_null() || call(block).is_some() {
+    if block.is_null() {
         return E_INVALIDARG;
+    }
+    if let Some(left) = call(block) {
+        // Calls are filed by block address, and one that succeeded stays
+        // filed until its result is taken. A title that never takes it and
+        // frees the block may get the same address for its next one, which
+        // it zeroes as every new block must be; the block of a result left
+        // behind never reads zero (it holds the result's size). So this is
+        // a new block, and the call left behind ends here. A call in flight
+        // keeps its address, and a block still holding a result is in use.
+        let over = *lock(&left.done);
+        if !(over && zeroed(block)) {
+            return E_INVALIDARG;
+        }
+        release(block);
     }
     let (status, size) = words(block);
     status.store(E_PENDING as u32 as usize, Ordering::Release);
@@ -702,9 +722,12 @@ pub fn XAsyncGetResultSize(block: *mut AsyncBlock, out: *mut usize) -> HRESULT {
 }
 
 /// Asks the provider to cancel; the call fails with `E_ABORT` unless the
-/// provider completed it first.
+/// provider completed it first. A completed call is left alone.
 pub fn XAsyncCancel(block: *mut AsyncBlock) {
     if let Some(call) = call(block) {
+        if *lock(&call.done) {
+            return;
+        }
         call.provider(OP_CANCEL, block, 0, std::ptr::null_mut());
         complete_call(&call, block, E_ABORT, 0);
     }
@@ -1143,6 +1166,62 @@ mod tests {
         COMPLETED.fetch_add(1, Ordering::SeqCst);
     }
 
+    /// A title that never takes a call's result and frees its block: the
+    /// next block allocated at that address (zeroed, as a new block must
+    /// be) begins a call like any other.
+    #[test]
+    fn a_new_block_where_a_result_was_left_begins_a_call() {
+        static CLEANED: AtomicU32 = AtomicU32::new(0);
+        /// Completes at once with one byte to fetch; counts its cleanups.
+        extern "system" fn left(op: u32, data: *const ProviderData) -> HRESULT {
+            match op {
+                // SAFETY: the runtime passes valid provider data.
+                OP_BEGIN => XAsyncComplete(unsafe { (*data).block }, S_OK, 1),
+                OP_CLEANUP => drop(CLEANED.fetch_add(1, Ordering::SeqCst)),
+                _ => {}
+            }
+            S_OK
+        }
+        /// Never completes by itself.
+        extern "system" fn idle(_: u32, _: *const ProviderData) -> HRESULT {
+            S_OK
+        }
+        let fresh = || AsyncBlock {
+            queue: std::ptr::null(),
+            context: std::ptr::null_mut(),
+            callback: None,
+            internal: [0; 4],
+        };
+        let (none, identity) = (std::ptr::null_mut(), 0x1e as *const c_void);
+        let begin = |block: &mut AsyncBlock, provider: Provider| {
+            XAsyncBegin(block, none, identity, std::ptr::null(), Some(provider))
+        };
+
+        let mut block = fresh();
+        assert_eq!(begin(&mut block, left), S_OK);
+        assert_eq!(XAsyncGetStatus(&mut block, false), S_OK);
+        // The block as the call left it is still that call's.
+        assert_eq!(begin(&mut block, left), E_INVALIDARG);
+        assert_eq!(CLEANED.load(Ordering::SeqCst), 0);
+
+        // Freed with its result never taken, and a new block in its place.
+        block = fresh();
+        assert_eq!(finished_with(&mut block, identity, Ok(vec![9])), S_OK);
+        assert_eq!(CLEANED.load(Ordering::SeqCst), 1, "the call left behind");
+        let mut value = 0u8;
+        assert_eq!(result(&mut block, identity, &mut value), S_OK);
+        assert_eq!(value, 9);
+        assert!(call(&mut block).is_none());
+
+        // A call still in flight keeps its address, whatever the block holds.
+        let mut block = fresh();
+        assert_eq!(begin(&mut block, idle), S_OK);
+        block = fresh();
+        assert_eq!(begin(&mut block, left), E_INVALIDARG);
+        XAsyncComplete(&mut block, E_ABORT, 0);
+        assert!(call(&mut block).is_none());
+    }
+
     #[test]
     fn async_calls_complete_and_return_results() {
         let mut q = std::ptr::null();
@@ -1344,6 +1423,68 @@ mod tests {
         );
         assert_eq!((value, used), (0x1234, 8));
         assert!(call(&raw mut block).is_none(), "the call ends with its result");
+        XTaskQueueCloseHandle(q);
+    }
+
+    #[test]
+    fn canceling_a_completed_call_leaves_it_alone() {
+        static CANCELS: AtomicU32 = AtomicU32::new(0);
+        extern "system" fn provider(op: u32, data: *const ProviderData) -> HRESULT {
+            // SAFETY: the runtime passes valid provider data.
+            let data = unsafe { &*data };
+            match op {
+                OP_BEGIN => {
+                    XAsyncComplete(data.block, S_OK, 1);
+                    S_OK
+                }
+                OP_CANCEL => {
+                    CANCELS.fetch_add(1, Ordering::SeqCst);
+                    S_OK
+                }
+                OP_GET_RESULT => {
+                    // SAFETY: the runtime checked one byte.
+                    unsafe { data.buffer.cast::<u8>().write(0x5a) };
+                    S_OK
+                }
+                _ => S_OK,
+            }
+        }
+        let mut q = std::ptr::null();
+        assert_eq!(XTaskQueueCreate(0, 0, &mut q), S_OK);
+        let mut block = AsyncBlock {
+            queue: q,
+            context: std::ptr::null_mut(),
+            callback: None,
+            internal: [0; 4],
+        };
+        let identity = 0x78 as *const c_void;
+        assert_eq!(
+            XAsyncBegin(
+                &mut block,
+                std::ptr::null_mut(),
+                identity,
+                std::ptr::null(),
+                Some(provider),
+            ),
+            S_OK
+        );
+        assert_eq!(XAsyncGetStatus(&mut block, false), S_OK);
+        XAsyncCancel(&mut block);
+        assert_eq!(CANCELS.load(Ordering::SeqCst), 0);
+        assert_eq!(XAsyncGetStatus(&mut block, false), S_OK);
+        let mut byte = 0u8;
+        let mut used = 0;
+        assert_eq!(
+            XAsyncGetResult(
+                &mut block,
+                identity,
+                1,
+                (&mut byte as *mut u8).cast(),
+                &mut used,
+            ),
+            S_OK
+        );
+        assert_eq!((byte, used), (0x5a, 1));
         XTaskQueueCloseHandle(q);
     }
 

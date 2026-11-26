@@ -17,55 +17,51 @@
 
 #[cfg(windows)]
 mod ambient;
-#[cfg(windows)]
-mod arena;
 #[cfg(all(windows, feature = "diagnostics"))]
 mod capture;
-#[cfg(windows)]
-mod cardmeter;
-#[cfg(all(windows, feature = "diagnostics"))]
-mod renderdoc;
-#[cfg(all(windows, feature = "diagnostics"))]
-mod shot;
 pub mod console;
 #[cfg(all(windows, feature = "diagnostics"))]
 mod copystat;
+#[cfg(all(windows, feature = "diagnostics"))]
+mod faultbook;
+#[cfg(windows)]
+mod cores;
 pub mod descriptor;
 pub mod device;
-#[cfg(windows)]
-mod drvwatch;
-#[cfg(windows)]
-mod fpsbox;
-#[cfg(windows)]
-mod spread;
 #[cfg(windows)]
 mod draw;
 pub mod dxgi;
 pub mod fence;
 pub mod frame;
-#[cfg(windows)]
-pub mod framelog;
+#[cfg(all(windows, feature = "diagnostics"))]
+mod book;
 #[cfg(windows)]
 mod host;
 #[cfg(windows)]
 mod indirect;
 #[cfg(windows)]
 mod inplace;
+#[cfg(windows)]
+mod land;
 pub mod list;
 pub mod object;
 pub mod pipeline;
 #[cfg(windows)]
-mod plaincopy;
+mod picked;
+#[cfg(windows)]
+mod pool;
+#[cfg(all(windows, feature = "diagnostics"))]
+mod popwatch;
 #[cfg(windows)]
 mod primitive;
-#[cfg(all(windows, feature = "diagnostics"))]
-mod profile;
 pub mod query;
 pub mod queue;
-#[cfg(windows)]
-mod queue2;
+#[cfg(all(windows, feature = "diagnostics"))]
+pub mod replay;
 pub mod resource;
 pub mod root;
+#[cfg(windows)]
+mod safecopy;
 #[cfg(windows)]
 mod sampler;
 #[cfg(windows)]
@@ -77,17 +73,43 @@ mod shadow;
 #[cfg(windows)]
 mod tiles;
 pub mod signature;
+mod switch;
+#[cfg(all(windows, feature = "diagnostics"))]
+mod ab;
+#[cfg(windows)]
+mod tdr;
 #[cfg(windows)]
 mod texture;
+pub mod timeline;
+#[cfg(windows)]
+pub mod titlewrite;
+#[cfg(windows)]
+mod upload;
 #[cfg(windows)]
 mod watch;
+#[cfg(windows)]
+mod texback;
 
 #[cfg(windows)]
 pub use host::on_failure;
+
+/// Whether `switch` is on now, if it is one of those `VICTORY_AB` turns on and
+/// off while the title runs (`ab`).
+#[cfg(all(windows, feature = "diagnostics"))]
+pub fn switched(switch: &str) -> Option<bool> {
+    ab::pick(switch)
+}
+
+/// What the frame is at (`copystat::phase`), for the sampling profiler.
+#[cfg(all(windows, feature = "diagnostics"))]
+pub fn frame_phase() -> u32 {
+    copystat::phase()
+}
 #[cfg(windows)]
-pub use inplace::{title_memory_freeing, title_memory_section, title_memory_view};
+pub use inplace::{title_memory_freeing, title_memory_section, title_memory_section_gone, title_memory_view};
 #[cfg(windows)]
 pub use watch::{
-    title_memory_reading, title_memory_remapped, title_memory_remapping, title_memory_written,
+    kernel_writing, title_memory_allocated, title_memory_freed, title_memory_reading, title_memory_remapped,
+    title_memory_remapping, title_memory_splitting, title_memory_unmapping, title_memory_written,
     writing as kernel_will_write,
 };
