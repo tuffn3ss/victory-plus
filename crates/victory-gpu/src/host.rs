@@ -8566,6 +8566,7 @@ impl Meter {
         let drawn = crate::draw::drawn();
         let frames = f64::from(self.frames);
         let fps = frames / elapsed.as_secs_f64();
+        crate::fpsbox::set(fps);
         let ms = elapsed.as_secs_f64() * 1000.0 / frames;
         let draws = (drawn - self.drawn) as f64 / frames;
         (self.since, self.frames, self.drawn) = (std::time::Instant::now(), 0, drawn);
@@ -8919,6 +8920,10 @@ impl Host {
                 ),
             ]);
             list.CopyResource(&back, texture);
+            // The frame rate, into the corner of what is shown (not of the
+            // title's own frame, which the lines below read back); the F3
+            // panel, drawn after it, covers it while shown.
+            crate::fpsbox::draw(self, list, &back, (width, height, format));
             #[cfg(feature = "diagnostics")]
             let capture = crate::capture::wanted(frame)
                 .then(|| crate::capture::read_back(&self.device, list, texture))

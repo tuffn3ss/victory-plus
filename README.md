@@ -38,6 +38,13 @@ Windows 11 Pro. The Series X profile is used throughout.
 - **A status line every 30 seconds**: the card's memory and budget, and
   textures refused for lack of room on the card. It tells from a player's
   log whether a scene that went black or blurry had a full card.
+- **The frame rate in the top left corner** of the picture, from
+  victory-fork (`crates/victory-gpu/src/fpsbox.rs`; `VICTORY_FPS_COUNTER=0`
+  hides it). F3 still shows VIctory-7900XTX's own panel over it.
+- **Joined submissions off** (`VICTORY_JOIN_PARTS=1` in the `.bat` below).
+  With VIctory-7900XTX's 8, the intro animation was shown out of order: in a
+  fast capture of the screen, about one moving frame in four went back to
+  the picture two frames before. With 1 it does not.
 - **A kernel fix** from upstream VIctory (Maraco91): a title image's file
   name that fits clears the last error.
 
@@ -82,7 +89,8 @@ set "VICTORY_AMBIENT=0.8"
 set "VICTORY_D3D12_DRED=light"
 set "VICTORY_SKIP_PIPELINES=none"
 set "VICTORY_THIN=1"
-set "VICTORY_JOIN_PARTS=8"
+rem 8, as VIctory-7900XTX sets it, shows the intro animation out of order (it jumps back and forth).
+set "VICTORY_JOIN_PARTS=1"
 set "VICTORY_UPLOAD_AHEAD=1"
 rem Keeps 14 GB of the emulator in RAM. On a PC with less than 32 GB, lower it.
 set "VICTORY_MEMORY_FLOOR_GB=14"
@@ -91,7 +99,7 @@ pause
 ```
 
 `scripts\play.ps1` from VIctory-7900XTX sets the same switches but the
-memory floor.
+memory floor, and joins submissions (`VICTORY_JOIN_PARTS=8`).
 
 ## Credits
 
