@@ -70,6 +70,8 @@ struct Job {
     ms: u64,
     causes: [u64; 4],
     phase: usize,
+    /// `crate::list::totals` when the frame was presented.
+    counts: [u64; 3],
 }
 
 /// Read-back buffers not in use.
@@ -201,6 +203,7 @@ pub(crate) fn sent(taken: Taken, flown: u64, frame: u64) {
         causes: crate::descriptor::host::pop_causes(),
         phase: usize::from(crate::ab::pick("VICTORY_KEEP_SHOWN").unwrap_or(false))
             + 2 * usize::from(crate::ab::pick("VICTORY_UPLOAD_AHEAD").unwrap_or(false)),
+        counts: crate::list::totals(),
     };
     let _ = to.send(job);
 }
@@ -222,6 +225,7 @@ struct Picture {
     ms: u64,
     causes: [u64; 4],
     phase: usize,
+    counts: [u64; 3],
     rgb: Vec<u8>,
     half: Vec<[i16; 3]>,
     /// Per block: how much it differs from the frame before.
@@ -341,9 +345,25 @@ fn watch(from: &mpsc::Receiver<Job>) {
             last.clear();
         }
         let changed = last.back().map(|p| differ(&p.rgb, &rgb)).unwrap_or_default();
-        let (frame, ms, causes, phase) = (job.frame, job.ms, job.causes, job.phase);
+        let (frame, ms, causes, phase, counts) = (job.frame, job.ms, job.causes, job.phase, job.counts);
         let half = half(&rgb);
-        last.push_back(Picture { frame, ms, causes, phase, rgb, half, changed, saved: false });
+        // With every frame saved, what the title recorded between this
+        // present and the one before, to set beside the pictures (a frame
+        // that draws less or more than its neighbours: the title's own
+        // choice of what to draw; the same counts and another picture: what
+        // the draws read).
+        if all && let Some(p) = last.back() {
+            let d: Vec<u64> = counts.iter().zip(&p.counts).map(|(a, b)| a.saturating_sub(*b)).collect();
+            let changed = changed.iter().filter(|&&c| c > CHANGED).count();
+            tracing::info!(
+                "pop watch frame {frame} at {:.3} s: {} draws, {} dispatches, {} indirect executions since the frame before; {changed} blocks of 16x16 changed",
+                ms as f64 / 1e3,
+                d[0],
+                d[1],
+                d[2]
+            );
+        }
+        last.push_back(Picture { frame, ms, causes, phase, counts, rgb, half, changed, saved: false });
         if all && let Some(p) = last.back_mut() {
             save(p);
         }

@@ -23,7 +23,9 @@
 //!
 //! Correctness first, the fallback: once a frame a few of the pages the
 //! write watch says were written ([`check_budget`], every
-//! [`check_every`] frames asked) are looked at whole, as before; a slot found
+//! [`check_every`] frames asked; `VICTORY_PORT_DESCRIPTORS_CHECK=all
+//! VICTORY_PORT_DESCRIPTORS_EVERY=1`: all of them at every sync, see
+//! [`budget_of`]) are looked at whole, as before; a slot found
 //! with a new view record that no mark told of is made (so it is right from
 //! then on) and counted, with the place in the title's code that last
 //! faulted on its 64 KiB block when the guards saw one ([`faulted`]): a writer
@@ -228,14 +230,36 @@ pub(crate) fn faulted(at: usize, rip: usize) {
 /// (`VICTORY_PORT_DESCRIPTORS_EVERY=<frames>`, 8 if not given).
 fn check_every() -> u64 {
     static N: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
-    *N.get_or_init(|| std::env::var("VICTORY_PORT_DESCRIPTORS_EVERY").ok().and_then(|v| v.trim().parse().ok()).unwrap_or(8u64).max(1))
+    *N.get_or_init(|| every_of(std::env::var("VICTORY_PORT_DESCRIPTORS_EVERY").ok().as_deref()))
 }
 
 /// Pages the fallback looks at a frame (`VICTORY_PORT_DESCRIPTORS_CHECK=<pages>`,
-/// 16 if not given; 0: none).
+/// 16 if not given; `all`: every written page at every sync; 0: none).
 fn check_budget() -> usize {
     static N: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
-    *N.get_or_init(|| std::env::var("VICTORY_PORT_DESCRIPTORS_CHECK").ok().and_then(|v| v.trim().parse().ok()).unwrap_or(16usize))
+    *N.get_or_init(|| budget_of(std::env::var("VICTORY_PORT_DESCRIPTORS_CHECK").ok().as_deref()))
+}
+
+/// What `VICTORY_PORT_DESCRIPTORS_CHECK` says: 16 pages a frame unless told
+/// otherwise; `all` (with `VICTORY_PORT_DESCRIPTORS_EVERY=1`): every page the
+/// write watch says was written, at every sync, as the layer looked before the
+/// port. With 16 pages, 110-250 view records a frame on them had no mark
+/// (run pop-1; 70-175 with `VICTORY_PORT_COPIES=1`, pop-4), so slots of
+/// textures picked by index can show an older view until the fallback comes
+/// round. Looking at every page made them right but cost 15-25 ms a frame
+/// in the boat scenes, and the trees and palms that come and go flickered
+/// just the same (runs pop-5, pop-6: POPIN.md), so it is not the default.
+fn budget_of(spec: Option<&str>) -> usize {
+    match spec.map(str::trim) {
+        None => 16,
+        Some("all") => usize::MAX,
+        Some(v) => v.parse().unwrap_or(16),
+    }
+}
+
+/// What `VICTORY_PORT_DESCRIPTORS_EVERY` says (unset: 8).
+fn every_of(spec: Option<&str>) -> u64 {
+    spec.and_then(|v| v.trim().parse().ok()).unwrap_or(8u64).max(1)
 }
 
 /// The fallback's pages: those the watch said were written, not looked at yet;
@@ -250,8 +274,18 @@ struct Fallback {
 
 static FALLBACK: std::sync::Mutex<Fallback> = std::sync::Mutex::new(Fallback { pages: std::collections::BTreeSet::new(), asked: 0, looked: 0, next: 0 });
 
-/// Whether to ask the write watch of the marked heap this frame.
+/// Whether the fallback is whole: every written page, at every sync of the
+/// heaps (several a frame), as the layer looked before the port.
+fn whole() -> bool {
+    check_budget() == usize::MAX && check_every() == 1
+}
+
+/// Whether to ask the write watch of the marked heap now (whole: at every
+/// sync; else once in [`check_every`] frames).
 pub(crate) fn ask_due(frame: u64) -> bool {
+    if whole() {
+        return true;
+    }
     let mut f = FALLBACK.lock().unwrap_or_else(|e| e.into_inner());
     if check_budget() == 0 || f.asked != 0 && frame < f.asked + check_every() {
         return false;
@@ -272,9 +306,15 @@ pub(crate) fn asked(ranges: &[(usize, usize)]) {
     }
 }
 
-/// The pages to look at whole this frame (once a frame; none after).
+/// The pages to look at whole now (whole: all those asked of, at every
+/// sync; else once a frame, none after).
 pub(crate) fn to_check(frame: u64) -> Vec<usize> {
     let mut f = FALLBACK.lock().unwrap_or_else(|e| e.into_inner());
+    if whole() {
+        let out: Vec<usize> = std::mem::take(&mut f.pages).into_iter().collect();
+        CHECKED[0].fetch_add(out.len() as u64, Relaxed);
+        return out;
+    }
     if f.looked == frame {
         return Vec::new();
     }
@@ -398,6 +438,56 @@ unsafe fn copied(to: *mut u8, from: *const u8, n: usize, real: usize) -> *mut u8
     out
 }
 
+/// The title's own `memcpy`, whose calls in the frame allocator's two table
+/// copiers go to [`title_copy`] (`victory_loader::descriptor_sites::apply_copies`).
+static TITLE_MEMCPY: AtomicUsize = AtomicUsize::new(0);
+
+/// Since the last line: the title's table copies into the marked heap through
+/// its own `memcpy`, and the slots they marked.
+static TITLE_COPIES: [AtomicU64; 2] = [const { AtomicU64::new(0) }; 2];
+
+/// The function the title's patched `memcpy` calls go to, with the title's
+/// `memcpy` at `real` behind it.
+pub fn title_copy_hook(real: usize) -> usize {
+    TITLE_MEMCPY.store(real, Relaxed);
+    title_copy as *const () as usize
+}
+
+/// The title's copy of a descriptor table (or of anything else) by its own
+/// `memcpy`: done by it, then every slot of the marked heap the copy wrote a
+/// byte of is marked, view record or not (a slot the title made null by a
+/// copy must be made again too).
+unsafe extern "system-unwind" fn title_copy(to: *mut u8, from: *const u8, n: usize) -> *mut u8 {
+    // SAFETY: the title's `memcpy`, noted before the title ran.
+    let real: Copy = unsafe { std::mem::transmute(TITLE_MEMCPY.load(Relaxed)) };
+    // SAFETY: the title's copy, by the function it asked for.
+    let out = unsafe { real(to, from, n) };
+    let marked = mark_range(to as u64, n as u64);
+    if marked > 0 {
+        TITLE_COPIES[0].fetch_add(1, Relaxed);
+        TITLE_COPIES[1].fetch_add(marked, Relaxed);
+    }
+    out
+}
+
+/// Marks every slot of the marked heap with a byte in `[to, to + n)`: how many.
+fn mark_range(to: u64, n: u64) -> u64 {
+    let len = MARKS.len.load(Acquire);
+    if len == 0 || n == 0 {
+        return 0;
+    }
+    let start = MARKS.start.load(Relaxed);
+    let (lo, hi) = (to.max(start), to.saturating_add(n).min(start + len));
+    if lo >= hi {
+        return 0;
+    }
+    let (first, last) = ((lo - start) / 32, (hi - 1 - start) / 32);
+    for slot in first..=last {
+        mark_slot(slot as usize);
+    }
+    last - first + 1
+}
+
 /// Marks slot `slot` of the marked heap (in it: checked by the caller).
 #[inline]
 fn mark_slot(slot: usize) {
@@ -433,6 +523,7 @@ pub(crate) fn line(frames: f64) {
     let ours = MARKED_BY_US.swap(0, Relaxed);
     let [pages, missed, other, pending, check_ns, tabled] = [0, 1, 2, 3, 4, 5].map(|i| CHECKED[i].swap(0, Relaxed));
     let copies = [0, 1].map(|i| COPIES[i].swap(0, Relaxed));
+    let title_copies = [0, 1].map(|i| TITLE_COPIES[i].swap(0, Relaxed));
     ALL[0].fetch_add(taken, Relaxed);
     ALL[1].fetch_add(ours, Relaxed);
     ALL[2].fetch_add(pages, Relaxed);
@@ -448,7 +539,7 @@ pub(crate) fn line(frames: f64) {
     };
     tracing::info!(
         "renderer port 2 (VICTORY_PORT_DESCRIPTORS=1) per frame: {:.0} slots told (of them {:.0} marked by our calls, the rest by the title's {} patched stores) in {:.1} takings, {:.3} ms taking; \
-         of the title's memcpy/memmove calls into the heap {:.0}, {:.0} records they marked; fallback: {:.1} pages looked at whole, {:.2} view records no store told of ({:.2} of them of draws' tables), {:.0} other records changed, {:.1} told and not taken yet, {:.2} ms; \
+         of the title's memcpy/memmove calls into the heap {:.0}, {:.0} records they marked; its own memcpy's table copies {:.0}, {:.0} slots they marked; fallback: {:.1} pages looked at whole, {:.2} view records no store told of ({:.2} of them of draws' tables), {:.0} other records changed, {:.1} told and not taken yet, {:.2} ms; \
          since the start: {} slots told ({} by our calls), {} pages looked at, {} view records missed; their writers: {}",
         taken as f64 / frames,
         ours as f64 / frames,
@@ -457,6 +548,8 @@ pub(crate) fn line(frames: f64) {
         ns as f64 / 1e6 / frames,
         copies[0] as f64 / frames,
         copies[1] as f64 / frames,
+        title_copies[0] as f64 / frames,
+        title_copies[1] as f64 / frames,
         pages as f64 / frames,
         missed as f64 / frames,
         tabled as f64 / frames,
@@ -475,6 +568,9 @@ pub(crate) fn line(frames: f64) {
 mod tests {
     use super::*;
 
+    /// The marked heap is one for the process: its tests one at a time.
+    static SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     #[test]
     fn marks_layout_is_what_the_stores_read() {
         assert_eq!(size_of::<Marks>(), victory_loader_marks_len());
@@ -489,10 +585,42 @@ mod tests {
         32
     }
 
+    /// A copy marks the slots it wrote a byte of in the marked heap, and
+    /// nothing outside it.
+    #[test]
+    fn a_copy_marks_the_slots_it_wrote() {
+        let _one = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        let start = 0x2000_0000u64;
+        assert!(adopt_now(start, 1000));
+        assert_eq!(mark_range(start + 32 * 10 + 16, 64), 3); // slots 10, 11, 12
+        assert_eq!(mark_range(start - 64, 64), 0);
+        assert_eq!(mark_range(start - 16, 32), 1); // slot 0
+        assert_eq!(mark_range(start + 32 * 999, 4096), 1); // slot 999, the last
+        assert_eq!(mark_range(start + 32 * 20, 0), 0);
+        assert_eq!(take(start).unwrap(), [(0, 1), (10, 3), (999, 1)]);
+        let_go(start);
+        assert_eq!(mark_range(start, 32), 0);
+    }
+
+    /// Unset, the fallback keeps the port's budget (16 pages, the watch
+    /// asked every 8 frames); `all` is every written page.
+    #[test]
+    fn fallback_keeps_the_ports_budget_unless_told_otherwise() {
+        assert_eq!(budget_of(None), 16);
+        assert_eq!(budget_of(Some("all")), usize::MAX);
+        assert_eq!(budget_of(Some(" 32 ")), 32);
+        assert_eq!(budget_of(Some("0")), 0);
+        assert_eq!(budget_of(Some("x")), 16);
+        assert_eq!(every_of(None), 8);
+        assert_eq!(every_of(Some("1")), 1);
+        assert_eq!(every_of(Some("0")), 1);
+    }
+
     /// Slots marked as the stores mark them, and by our calls, come out once
     /// each, as runs; outside the heap nothing is marked.
     #[test]
     fn marked_slots_are_taken_once_as_runs() {
+        let _one = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
         let start = 0x1000_0000u64;
         assert!(adopt_now(start, 1000));
         assert!(adopted(start) && !adopted(start + 32));

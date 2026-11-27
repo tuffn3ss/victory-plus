@@ -106,6 +106,17 @@ const BACK: u64 = 256 << 10;
 /// pages there are in the first seconds (run light-4).
 const FAULTS: usize = 128;
 const FAULTS_ALL: usize = 2048;
+
+/// Pages taken from the faults in all (`VICTORY_BVH_FAULTS_ALL=<n>`; unset:
+/// [`FAULTS_ALL`]). With ray tracing the bound is met in the first minute
+/// (run play-1126-0921: at 63 s), and from then on 130-500 pages a frame that
+/// the walking programs touch have no copy for the rest of the run.
+fn faults_all() -> usize {
+    static N: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+    *N.get_or_init(|| {
+        std::env::var("VICTORY_BVH_FAULTS_ALL").ok().and_then(|v| v.trim().parse().ok()).unwrap_or(FAULTS_ALL)
+    })
+}
 /// Frames over which every page is looked at once.
 const SWEEP: usize = 128;
 
@@ -203,6 +214,10 @@ struct Stats {
     /// view, a structure named in upload memory.
     came: [u64; 4],
     micros: u64,
+    /// Pages found without a copy that were left so because of the bounds on
+    /// pages taken from faults, and the different pages faulted.
+    left: u64,
+    distinct: std::collections::HashSet<u64>,
 }
 
 // SAFETY: the mappings are of memory the struct owns; all access is under
@@ -675,14 +690,38 @@ impl Memory {
         }
         pages.sort_unstable();
         let mut made = 0;
+        let all = faults_all();
         for &page in &pages {
-            if made < FAULTS && self.faulted < FAULTS_ALL && self.copy_of(page).is_none() && self.map(page) {
-                made += 1;
-                self.faulted += 1;
-                self.bring(page, page + 1);
+            self.stats.distinct.insert(page);
+            if self.copy_of(page).is_some() {
+                continue;
+            }
+            if made < FAULTS && self.faulted < all {
+                if self.map(page) {
+                    made += 1;
+                    self.faulted += 1;
+                    self.bring(page, page + 1);
+                }
+            } else {
+                self.stats.left += 1;
             }
         }
         self.stats.faults += pages.len() as u64;
+        // The first frames that leave pages without a copy: all of them, and
+        // which of them hold a packed structure's first bytes or lie in a
+        // title buffer (to tell walked structures from stray pointers).
+        static WHOLE: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+        if made < pages.len() && self.faulted >= faults_all() && WHOLE.fetch_add(1, std::sync::atomic::Ordering::Relaxed) < 3 {
+            let mut text = String::new();
+            for &page in pages.iter().filter(|&&p| self.copy_of(p).is_none()) {
+                let at = page * PAGE;
+                let committed = crate::texture::committed(at as *const u8, PAGE as usize);
+                let buffer = crate::shadow::in_buffer(at, 1).is_some();
+                let packed = committed && self.packed_at(at).is_some();
+                text += &format!(" {at:#x}{}{}{}", if committed { "" } else { "?" }, if buffer { "b" } else { "" }, if packed { "p" } else { "" });
+            }
+            tracing::warn!(frame = self.frame, "title memory by address: pages left without a copy by the bounds (?: not committed, b: in a title buffer, p: a packed structure there):{text}");
+        }
         // Each is an access that read 0 or was dropped.
         static SAID: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
         let said = SAID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -765,7 +804,8 @@ impl Memory {
             "title memory by address: {} pages ({} MB) in {} arenas, {} copies in all; per frame {:.0} dispatches that read, {:.0} that build, \
              {:.1} pages that had no copy, {:.1} pages turned down, {:.1} results brought back; {:.0} pages looked at, {:.1} KB changed, \
              {:.1} packed structures ({} there), {:.2} ms; {} windows; since the last line {} KB of packed structures came and {} of them went, \
-             and pages for constants {}, views written {}, others {}, upload memory {}, faults in all {}",
+             and pages for constants {}, views written {}, others {}, upload memory {}, faults in all {}; \
+             since the last line {} different pages faulted, {:.1} a frame left without a copy by the bounds ({} in all)",
             self.pages.len(),
             (self.pages.len() as u64 * PAGE) >> 20,
             self.arenas.len(),
@@ -787,7 +827,33 @@ impl Memory {
             s.came[1],
             s.came[2],
             s.came[3],
-            self.faulted
+            self.faulted,
+            s.distinct.len(),
+            s.left as f64 / frames,
+            faults_all()
+        );
+        // Where the copies shaders walk lie: a read of the PC's memory
+        // crosses the bus.
+        let in_pc = |shadow: &Arc<Shadow>| {
+            let mut props = D3D12_HEAP_PROPERTIES::default();
+            // SAFETY: a live committed buffer.
+            unsafe { shadow.buffer.GetHeapProperties(Some(&mut props), None) }.is_ok()
+                && props.Type != D3D12_HEAP_TYPE_DEFAULT
+                && !(props.Type == D3D12_HEAP_TYPE_CUSTOM && props.MemoryPoolPreference == D3D12_MEMORY_POOL_L1)
+        };
+        let arena = |n: usize| self.arenas.iter().any(|a| a.0 == n);
+        let (mut pc, mut pc_mb, mut pc_arenas) = (0, 0u64, 0);
+        for (n, shadow) in self.copies.iter().enumerate() {
+            if in_pc(shadow) {
+                pc += 1;
+                pc_mb += shadow.span().1 >> 20;
+                pc_arenas += usize::from(arena(n));
+            }
+        }
+        tracing::info!(
+            "title memory by address: of the {} copies, {pc} in the PC's memory ({pc_mb} MB; arenas {pc_arenas} of {})",
+            self.copies.len(),
+            self.arenas.len()
         );
         self.stats.from = Some((now, self.frame));
     }
