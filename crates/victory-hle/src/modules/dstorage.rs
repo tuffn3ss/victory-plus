@@ -322,11 +322,10 @@ struct Files {
 
 impl Files {
     fn new(first: std::fs::File, io: Io) -> Files {
-        let workers = std::thread::available_parallelism().map_or(4, |n| n.get());
         let others = match io {
             Io::One => 0,
             Io::Overlapped => 1,
-            Io::Handles | Io::Direct => workers,
+            Io::Handles | Io::Direct => workers(),
         };
         Files { first, others: (0..others).map(|_| OnceLock::new()).collect(), io }
     }
@@ -354,6 +353,28 @@ impl Files {
             (file, _) => file.unwrap_or(&self.first).seek_read(out, offset),
         }
     }
+}
+
+/// How many workers run the requests (`VICTORY_DSTORAGE_WORKERS=<n>`, 1 to
+/// 64; the host's logical processors if not given).
+///
+/// A worker reads its request's source and waits for the disk before it
+/// inflates or unpacks it. Within one 5 s summary with the host's 12, the
+/// workers were busy for 6.1 of them on average, 3.4 of which were spent
+/// reading. In bursts after a cut in a cutscene, hundreds of requests
+/// waited behind those reads (a p99 of 260 ms from submit to start). More
+/// workers put more reads on the disk at once and decode beside them. The
+/// staging limit still bounds the compressed bytes they hold.
+fn workers() -> usize {
+    static N: OnceLock<usize> = OnceLock::new();
+    *N.get_or_init(|| {
+        let host = std::thread::available_parallelism().map_or(4, |n| n.get());
+        std::env::var("VICTORY_DSTORAGE_WORKERS")
+            .ok()
+            .and_then(|v| v.trim().parse::<usize>().ok())
+            .filter(|&n| n > 0)
+            .map_or(host, |n| n.min(64))
+    })
 }
 
 /// A number for this thread: 0 for the first that asks, and so on.
@@ -628,8 +649,7 @@ fn scheduler() -> Option<&'static Scheduler> {
         })
         .as_ref()?;
     STARTED.call_once(|| {
-        let workers = std::thread::available_parallelism().map_or(4, |n| n.get());
-        let started = (0..workers)
+        let started = (0..workers())
             .filter(|i| {
                 std::thread::Builder::new()
                     .name(format!("dstorage {i}"))

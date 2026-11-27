@@ -1559,10 +1559,19 @@ mod tests {
                 decode(bc, std::hint::black_box(&src), &mut dst, &t).unwrap();
             }
             let secs = started.elapsed().as_secs_f64() / f64::from(runs);
+            let stride = widths.len() * per;
+            let mut recs = vec![0u8; blocks * stride];
+            let started = std::time::Instant::now();
+            for _ in 0..runs {
+                let mut next = std::hint::black_box(&src).iter().copied();
+                lanes(&t, widths, per, blocks, |_| next.next(), &mut recs).unwrap();
+            }
+            let lane_secs = started.elapsed().as_secs_f64() / f64::from(runs);
             println!(
-                "BC{bc}: {blocks} blocks, {:.1} MB out/s, {:.1} ns/block",
+                "BC{bc}: {blocks} blocks, {:.1} MB out/s, {:.1} ns/block ({:.1} of them in the lanes)",
                 (blocks * block) as f64 / secs / 1e6,
-                secs * 1e9 / blocks as f64
+                secs * 1e9 / blocks as f64,
+                lane_secs * 1e9 / blocks as f64
             );
         }
     }

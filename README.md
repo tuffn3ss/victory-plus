@@ -21,10 +21,11 @@ profile, with the switches under "Running it".
 | | On this PC |
 |---|---|
 | How far | Through the prologue and out of the prison into the open world. The character moves, and the HUD, pause menu and pad input work. |
-| Frame rate | About 17 to 20 fps (57 ms a frame). Without VIctory-7900XTX's renderer patches it was 14 fps (71 ms); on victory-fork 6 to 7 fps. The first runs of a new build are far slower and hitch while the driver makes pipelines. |
+| Frame rate | About 17 to 20 fps (57 ms a frame), with parts of the scene maxing out at 25 fps. Without VIctory-7900XTX's renderer patches it was 14 fps (71 ms); on victory-fork 6 to 7 fps. The first runs of a new build are far slower and hitch while the driver makes pipelines. |
 | Picture | Sharp at 1080p: the game renders at 2560x1440 and draws in 4K, shrunk to the window. Lit, with textures, characters and sky. A stand-in light fills the shade, since the game's ray-traced lighting is too slow to use here. |
-| Memory | 30.7 GB of private memory, 13.1 GB on the card. As a Series S (`--console series-s`): 27.3 GB and 11.8 GB at the same speed, but rendered at 1280x720 and soft. Give Windows a page file of 48 GB or more. |
+| Memory | Around 27 to 28 GB of RAM in play, 30.7 GB of private memory at most in a test run, 13.1 GB on the card. As a Series S (`--console series-s`): 27.3 GB and 11.8 GB at the same speed, but rendered at 1280x720 and soft. Give Windows a page file of 48 GB or more. |
 | Stability | No crash in the recent 5-minute test runs. |
+| Known problem | In places (the swamp of the boat mission) trees drop out for a frame and come back while their shadows stay. Neither VIctory-7900XTX's fix (`VICTORY_PORT_CONSTANTS_ORDER`) nor copying the game's CPU culling depth back (`VICTORY_OCCLUSION_BACK=1`) stopped it there. |
 
 ## What VIctory Plus adds to VIctory-7900XTX
 
@@ -73,6 +74,10 @@ saved 3.9 GB of the card on victory-fork, but here it made about 11 GB of
 upload buffers more and took the frame from 62 to 380 ms. It stays off, as in
 VIctory-7900XTX.
 
+Merged on 2026-11-26: VIctory-7900XTX up to 014d52d and the fixes on Belobug's
+`a-publier` branch (an AMD shader compiler crash, the HUD's memory lines, warm
+and profile fixes); their own keyboard and mouse mapping is left out for ours.
+
 What VIctory-7900XTX itself changed, and why, is in
 [docs/README-avatarmanz.md](docs/README-avatarmanz.md) and
 [docs/findings.md](docs/findings.md); victory-fork's own README is in
@@ -118,7 +123,11 @@ set "VICTORY_PORT_DESCRIPTORS=1"
 set "VICTORY_PORT_CBV=1"
 set "VICTORY_PORT_GUARD=1"
 set "VICTORY_PORT_JOURNAL=1"
+rem VIctory-7900XTX's tree flicker fix: about 4 ms a frame here, and it did not stop the flicker below.
+set "VICTORY_PORT_CONSTANTS_ORDER=0"
 set "VICTORY_TEXTURE_LOOK_MS=500"
+rem 24 threads read the game's streamed data (default: one per CPU thread); detailed models load sooner.
+set "VICTORY_DSTORAGE_WORKERS=24"
 rem Keeps 14 GB of the emulator in RAM. On a PC with less than 32 GB, lower it.
 set "VICTORY_MEMORY_FLOOR_GB=14"
 rem Runs write down the pipelines they make; warm makes the new ones before the run.

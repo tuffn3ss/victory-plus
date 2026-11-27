@@ -50,11 +50,43 @@ fn kinds() -> &'static [(u64, u32, u32)] {
     })
 }
 
-/// Whether title texture `resource` is of a kind copied back.
+/// The depth pyramid the title's CPU culls with (1024x512, R32_FLOAT, with
+/// its levels): the title's `depth_pyramid_cpu_occlusion` program writes it
+/// from the frame's depth, and the title's own code reads it to cull what the
+/// next frame draws (the walls trace, `VICTORY_WALLS_TRACE=1`: the program's
+/// one unordered-access view). Left in the host copy, the CPU culled against
+/// whatever title memory held there: in the swamp of the boat mission the
+/// trees and huts in view were missing in 40 to 60 % of frames while their
+/// shadows (which that culling does not touch) stayed, whatever else was
+/// switched (run camp-ab2: eight switches in all 32 combinations).
+///
+/// Copying it back did not stop that (run fix-ab, the same swamp, A/B with
+/// `VICTORY_PORT_CONSTANTS_ORDER`: a tree in view dropped out in 28 to 30 of
+/// 30 bursts in all four combinations) and cost about 2 ms a frame, so it is
+/// off unless `VICTORY_OCCLUSION_BACK=1`.
+const CPU_OCCLUSION: (u64, u32, u32) = (1024, 512, 41);
+
+/// Whether the CPU's depth pyramid is copied back (`VICTORY_OCCLUSION_BACK=1`,
+/// or its phase of `VICTORY_AB`).
+fn occlusion_back() -> bool {
+    #[cfg(feature = "diagnostics")]
+    if let Some(on) = crate::ab::pick("VICTORY_OCCLUSION_BACK") {
+        return on;
+    }
+    static ON: OnceLock<bool> = OnceLock::new();
+    *ON.get_or_init(|| std::env::var_os("VICTORY_OCCLUSION_BACK").is_some_and(|v| v == "1"))
+}
+
+/// Whether title texture `resource` is of a kind copied back. The CPU's depth
+/// pyramid ([`CPU_OCCLUSION`]) is only with [`occlusion_back`].
 pub(crate) fn wanted(resource: This) -> bool {
-    let kinds = kinds();
-    !kinds.is_empty()
-        && crate::resource::texture_kind(resource).is_some_and(|k| kinds.contains(&k))
+    let Some(kind) = crate::resource::texture_kind(resource) else {
+        return false;
+    };
+    if kind == CPU_OCCLUSION && occlusion_back() {
+        return true;
+    }
+    kinds().contains(&kind)
 }
 
 /// An outstanding write to a specific allocation. Mapping and resource

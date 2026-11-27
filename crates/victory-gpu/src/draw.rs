@@ -154,6 +154,11 @@ thread_local! {
     /// While a stage's tables are walked (`State::tables`): whether that
     /// stage's shader can store to buffers (`Translated::stores`).
     static STORES: std::cell::Cell<bool> = const { std::cell::Cell::new(true) };
+    /// While a dispatch of one of the title's culling programs is prepared
+    /// (`VICTORY_WALLS_TRACE`): its name, for the views it reads and writes
+    /// (`cull_view`).
+    #[cfg(feature = "diagnostics")]
+    static CULL_PASS: std::cell::Cell<Option<&'static str>> = const { std::cell::Cell::new(None) };
     /// While `State::early_textures` runs the texture pass: the
     /// milliseconds and the bytes that run may take, in place of the
     /// pass's own per frame.
@@ -304,6 +309,10 @@ const WINDOW_MOST: u64 = 64;
 /// charged what it asks, a few thousand of 2^27. And arguments the title's CPU side changes are seen as
 /// before, at the next submission.
 fn windows() -> bool {
+    #[cfg(feature = "diagnostics")]
+    if let Some(on) = crate::ab::pick("VICTORY_INDIRECT_WINDOW") {
+        return on;
+    }
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *ON.get_or_init(|| std::env::var_os("VICTORY_INDIRECT_WINDOW").is_some_and(|v| v == "1"))
 }
@@ -405,7 +414,15 @@ pub(crate) fn in_place_indirect_line(frames: f64) {
 /// dispatches the title runs side by side (its tile classes, up to 92 at a
 /// time) are not held up by waits of ours. Off: whether the title has ways
 /// to wait that do not pass through its lists' methods is not known.
+///
+/// Named in `VICTORY_AB` (diagnostics builds), it is 2 in the phases that
+/// have it on and 1 in the others, so that one run shows both in the same
+/// scene.
 fn batches() -> u8 {
+    #[cfg(feature = "diagnostics")]
+    if let Some(on) = crate::ab::pick("VICTORY_INDIRECT_BATCH") {
+        return if on { 2 } else { 1 };
+    }
     static ON: std::sync::OnceLock<u8> = std::sync::OnceLock::new();
     *ON.get_or_init(|| match std::env::var("VICTORY_INDIRECT_BATCH").as_deref() {
         Ok("0") => 0,
@@ -1614,6 +1631,8 @@ impl State {
         if crate::host::walls_trace() {
             self.walls_census(p, compute);
         }
+        #[cfg(feature = "diagnostics")]
+        CULL_PASS.set(if compute && crate::host::walls_trace() { cull_name(p) } else { None });
         // A list without a view heap: one of the title's for the views the
         // host itself puts into heap slots.
         if self.heaps[0] == 0
@@ -3400,17 +3419,6 @@ impl State {
     /// shot has no such rectangle (run 187, frame 1414). The line shows
     /// the frame in which that changes.
     fn walls_census(&self, p: &HostPipeline, compute: bool) {
-        const CULL: [(&str, &str); 9] = [
-            ("55679a0547649d0b", "tree"),
-            ("89d08e561897d4e5", "tree_imposter"),
-            ("9209777e8face9dd", "grass"),
-            ("17af15c4015cb4b6", "prop"),
-            ("fdd56d97a806bcca", "prop_nocull"),
-            ("42f717f1b4d18e94", "simple"),
-            ("1c4b3c0547e3e6fa", "slod"),
-            ("9146291b38ea9ce1", "meshlet_args"),
-            ("42683eebec081520", "depth_pyramid_cpu_occlusion"),
-        ];
         type Census = (u64, std::collections::BTreeMap<[i32; 4], u32>, [u32; 9]);
         static CENSUS: std::sync::Mutex<Census> =
             std::sync::Mutex::new((u64::MAX, std::collections::BTreeMap::new(), [0; 9]));
@@ -4475,6 +4483,51 @@ struct FreshTable {
     ready: Vec<((usize, usize, bool, usize), bool)>,
 }
 
+/// The title's culling programs by the hash of their shader (the walls
+/// trace, `State::walls_census`).
+const CULL: [(&str, &str); 9] = [
+    ("55679a0547649d0b", "tree"),
+    ("89d08e561897d4e5", "tree_imposter"),
+    ("9209777e8face9dd", "grass"),
+    ("17af15c4015cb4b6", "prop"),
+    ("fdd56d97a806bcca", "prop_nocull"),
+    ("42f717f1b4d18e94", "simple"),
+    ("1c4b3c0547e3e6fa", "slod"),
+    ("9146291b38ea9ce1", "meshlet_args"),
+    ("42683eebec081520", "depth_pyramid_cpu_occlusion"),
+];
+
+/// The culling program `p` is, if it is one.
+#[cfg(feature = "diagnostics")]
+fn cull_name(p: &HostPipeline) -> Option<&'static str> {
+    CULL.iter().find(|c| p.stages.iter().any(|s| s.shader.hash.as_str() == c.0)).map(|c| c.1)
+}
+
+/// The walls trace: once each, what a culling program reads and writes, by
+/// the kind of view and texture (size and format) or buffer (bytes).
+#[cfg(feature = "diagnostics")]
+fn cull_view(name: &'static str, kind: ResourceType, view: &View) {
+    static SEEN: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+    let what = match view {
+        View::Shader(resource, _) | View::Unordered(resource, _, _) => {
+            match crate::resource::texture_kind(*resource as This) {
+                Some((w, h, f)) => format!("texture {w}x{h} f{f}"),
+                None => match crate::descriptor::host::buffer_copy(view) {
+                    Some((_, _, len)) => format!("buffer of {len} bytes"),
+                    None => "another resource".to_owned(),
+                },
+            }
+        }
+        _ => return,
+    };
+    let line = format!("{name}: {kind:?} {what}");
+    let mut seen = SEEN.lock().unwrap_or_else(|e| e.into_inner());
+    if !seen.contains(&line) {
+        tracing::info!(view = %line, "walls trace: a view a culling program uses");
+        seen.push(line);
+    }
+}
+
 /// Whether a table a list reads again, with nothing changed in the list
 /// since, is left as it is (`VICTORY_READY_ONCE=0`: every entry is gone
 /// through again at every draw).
@@ -4503,6 +4556,10 @@ fn readable(list: &HostList, kind: ResourceType, view: &View) {
     const UNORDERED_ACCESS: u32 = 0x8;
     let placed = crate::descriptor::host::placed_texture(view);
     let view = placed.as_ref().unwrap_or(view);
+    #[cfg(feature = "diagnostics")]
+    if let Some(name) = CULL_PASS.get() {
+        cull_view(name, kind, view);
+    }
     // Buffer views read title memory: their range is copied at submission;
     // what shaders write through unordered access goes back to it after.
     if let Some((shadow, address, len)) = crate::descriptor::host::buffer_copy(view) {
