@@ -1183,14 +1183,70 @@ fn constant_of(i: u32, generation: u32) -> View {
 }
 
 /// A placed view's shape and its address.
+///
+/// Words 1 and 13 of the resource description are the filler of its
+/// layout, whatever the title's stack held there (as `resource::texture_at`
+/// found for its key): kept in the shape, nearly every view the title wrote
+/// was a shape not seen before, and the shapes kept for the run grew by
+/// 3,000 a second, 3.1 million after 15 minutes of play and about 1 GB of
+/// our heap (run play of 2026-11-27). Nothing reads those two words.
+/// `VICTORY_PLACED_FILLER=1`: kept, as before.
+///
+/// The view's words likewise: they are the host's 40-byte view description
+/// (`descriptor::host::srv_desc`, `uav_desc`), whose padding and whatever
+/// of the union its dimension does not use the title leaves as its stack
+/// held them. With the resource's filler alone left out the shapes still
+/// grew by some 1,900 a second (run heap2: shader views' word 3, the
+/// padding before the union, took 70,000 values in 500,000 shapes, word 9
+/// 23,000).
 fn shape_of(unordered: bool, resource: &[u32; 14], desc: &[u32; 16]) -> (Shape, u64) {
     let mut rest = [0u32; 14];
     rest[..10].copy_from_slice(&desc[..10]);
     rest[10..].copy_from_slice(&desc[12..]);
+    let mut resource = *resource;
+    if !crate::resource::placed_filler_kept() {
+        resource[1] = 0;
+        resource[13] = 0;
+        let used = view_words_used(unordered, desc[1]);
+        rest[used..10].fill(0);
+        if !unordered {
+            rest[3] = 0;
+        }
+    }
     (
-        (unordered, *resource, rest),
+        (unordered, resource, rest),
         u64::from(desc[10]) | u64::from(desc[11]) << 32,
     )
+}
+
+/// How many of a view description's first ten words mean anything for a
+/// view of `dimension`: the words before the union and the union's members
+/// for that dimension (D3D12's layout: a shader view's union begins at word
+/// 4, after the component mapping and a word of padding; an unordered
+/// view's at word 2). All ten for a dimension not known here.
+fn view_words_used(unordered: bool, dimension: u32) -> usize {
+    let union = if unordered {
+        match dimension {
+            1 => 7, // buffer: first element (2), elements, stride, counter offset (2), flags
+            2 | 6 => 1,
+            4 | 7 => 2,
+            3 | 8 => 3,
+            5 => 4,
+            _ => return 10,
+        }
+    } else {
+        match dimension {
+            1 => 5, // buffer: first element (2), elements, stride, flags
+            2 | 8 | 9 => 3,
+            3 | 10 => 5,
+            4 => 4,
+            5 => 6,
+            6 => 1,
+            7 | 11 => 2,
+            _ => return 10,
+        }
+    };
+    (if unordered { 2 } else { 4 }) + union
 }
 
 /// The record words that name the view of placed memory at `address` with
@@ -1212,7 +1268,31 @@ impl Views {
         let at = self.shapes.len() as u32;
         self.shapes.push(shape);
         self.shape_index.insert(shape, at);
+        #[cfg(feature = "diagnostics")]
+        if matches!(self.shapes.len(), 50_000 | 500_000 | 2_000_000) {
+            self.say_what_varies();
+        }
         Some(at)
+    }
+
+    /// How many values each word of the shapes kept takes (diagnostics, at
+    /// a few sizes of the table): the words that take many are what makes
+    /// new shapes.
+    #[cfg(feature = "diagnostics")]
+    fn say_what_varies(&self) {
+        let mut seen: Vec<std::collections::HashSet<u32>> = vec![Default::default(); 29];
+        for (unordered, resource, rest) in &self.shapes {
+            seen[0].insert(u32::from(*unordered));
+            for (i, &w) in resource.iter().chain(rest.iter()).enumerate() {
+                seen[1 + i].insert(w);
+            }
+        }
+        let counts: Vec<String> = seen.iter().map(|s| s.len().to_string()).collect();
+        tracing::info!(
+            shapes = self.shapes.len(),
+            "placed view shapes: values each word takes (unordered, resource words 0-13, view words 0-9 and 12-15): {}",
+            counts.join(" ")
+        );
     }
 
     /// The view of placed memory [`placed_words`] named.
@@ -1983,8 +2063,11 @@ mod tests {
         let slots = [0u64; 4];
         let at = slots.as_ptr() as u64;
         // A resource description and a view no other test uses.
-        let resource: [u32; 14] = std::array::from_fn(|k| 0x5ee0_0000 + k as u32);
+        // (Its filler and padding words zero: what the shapes keep of them.)
+        let mut resource: [u32; 14] = std::array::from_fn(|k| 0x5ee0_0000 + k as u32);
+        (resource[1], resource[13]) = (0, 0);
         let mut desc: [u32; 16] = std::array::from_fn(|k| 0x7a70_0000 + k as u32);
+        desc[3] = 0;
         let mine = |v: &View| match v {
             View::Constant(address, _) => (0x6_0000_0000..0x6_1000_0000).contains(address),
             View::Placed(_, r, _) => *r == resource,
@@ -2003,6 +2086,15 @@ mod tests {
         }
         assert_eq!(entries(), 0, "no table entries");
         assert_eq!(shapes(), 1, "one shape for 20,000 placed views");
+        // What the title's stack left in the filler and the padding makes
+        // no shape of its own, and is not given back.
+        let mut stack_left = resource;
+        (stack_left[1], stack_left[13]) = (0xdead, 0xbeef);
+        let mut padded = desc;
+        padded[3] = 0x1234_5678;
+        create_placed_srv(null, &stack_left, &padded, at);
+        assert_eq!(view(at), Some(View::Placed(false, resource, desc)));
+        assert_eq!(shapes(), 1, "filler and padding are not part of a shape");
         // The same shape, unordered: another shape.
         create_placed_uav(null, &resource, &desc, at);
         assert_eq!(view(at), Some(View::Placed(true, resource, desc)));

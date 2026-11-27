@@ -25,7 +25,7 @@ mod hooks;
 #[cfg(all(windows, feature = "diagnostics"))]
 mod record;
 #[cfg(all(windows, feature = "diagnostics"))]
-mod report;
+pub(crate) mod report;
 
 #[cfg(all(windows, feature = "diagnostics"))]
 pub use hooks::import;

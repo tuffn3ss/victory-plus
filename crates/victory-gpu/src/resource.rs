@@ -3128,6 +3128,17 @@ pub(crate) fn texture_held(resource: This) -> Option<(u32, crate::texture::Diges
     *made_copy(resource)?.holds.lock().unwrap_or_else(|e| e.into_inner())
 }
 
+/// Whether the filler words of a placed resource's description (1 and 13)
+/// are kept in what tells resources and view shapes apart
+/// (`VICTORY_PLACED_FILLER=1`; off: left out).
+pub(crate) fn placed_filler_kept() -> bool {
+    static KEPT: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *KEPT.get_or_init(|| std::env::var_os("VICTORY_PLACED_FILLER").is_some_and(|v| v == "1"))
+}
+
+/// The most descriptions [`PLACED_RAW`] holds.
+const RAW_MOST: usize = 1 << 16;
+
 /// The resource for a texture placed at `address` with the resource
 /// description `desc` (as words), made on first use.
 #[cfg(windows)]
@@ -3138,10 +3149,9 @@ pub(crate) fn texture_at(address: u64, desc: &[u32; 14]) -> Option<This> {
     // them each got a resource and a host copy of their own, on a card
     // that fills at world entry. They are not part of what a texture is.
     // `VICTORY_PLACED_FILLER=1`: kept in the key, as before.
-    static KEPT: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     let raw = *desc;
     let mut key = *desc;
-    if !*KEPT.get_or_init(|| std::env::var_os("VICTORY_PLACED_FILLER").is_some_and(|v| v == "1")) {
+    if !placed_filler_kept() {
         key[1] = 0;
         key[13] = 0;
     }
@@ -3149,9 +3159,11 @@ pub(crate) fn texture_at(address: u64, desc: &[u32; 14]) -> Option<This> {
     let mut map = PLACED_TEXTURES.lock().unwrap_or_else(|e| e.into_inner());
     // How many resources the filler alone would have added (a count for
     // the log: `placed_filler_twins`).
+    // (Counted for the first [`RAW_MOST`] descriptions only: every one the
+    // title writes has other filler, and the set kept them all for the run.)
     if raw != key {
         let mut seen = PLACED_RAW.lock().unwrap_or_else(|e| e.into_inner());
-        if seen.insert((address, raw)) {
+        if seen.len() < RAW_MOST && seen.insert((address, raw)) {
             let others = seen.range((address, [0; 14])..=(address, [u32::MAX; 14])).filter(|(_, r)| {
                 let mut blank = *r;
                 blank[1] = 0;

@@ -33,8 +33,10 @@ const SPARE: usize = 2;
 /// The same while the card has room ([`room`]): 4 GiB of them.
 const SPARE_KEPT: usize = 64;
 /// The same of blocks of staging buffers, which are the PC's memory: run
-/// crash-1 held 5.2 GB of them.
-const STAGING_KEPT: usize = 8;
+/// crash-1 held 5.2 GB of them. Eight, 512 MB, sat empty beside some 50 MB
+/// of live staging in play on a PC of 32 GB with half a gigabyte free (run
+/// ram-base: 768 MB of blocks); a block made again costs some 300 us.
+const STAGING_KEPT: usize = 2;
 /// How many are kept now.
 static SPARES: AtomicUsize = AtomicUsize::new(SPARE);
 

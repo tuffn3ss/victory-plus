@@ -12,7 +12,7 @@ upstream kernel fix, with measurements from an AMD Radeon RX 7800 XT with
 copy of the game. It is not affiliated with or endorsed by the game's
 developer or publisher.
 
-## Status (2026-11-26)
+## Status (2026-11-26, evening)
 
 Tested on one PC: AMD Radeon RX 7800 XT 16 GB, AMD Ryzen 5 7600X, 32 GB RAM,
 Windows 11 Pro. Measured in the boat scene the save loads into, Series X
@@ -21,9 +21,9 @@ profile, with the switches under "Running it".
 | | On this PC |
 |---|---|
 | How far | Through the prologue and out of the prison into the open world. The character moves, and the HUD, pause menu and pad input work. |
-| Frame rate | About 17 to 20 fps (57 ms a frame), with parts of the scene maxing out at 25 fps. Without VIctory-7900XTX's renderer patches it was 14 fps (71 ms); on victory-fork 6 to 7 fps. The first runs of a new build are far slower and hitch while the driver makes pipelines. |
+| Frame rate | About 20 to 22 fps (45 ms a frame in a 12-minute run on 2026-11-26; 54 ms before the memory fixes), with parts of the scene maxing out at 25 fps. Without VIctory-7900XTX's renderer patches it was 14 fps (71 ms); on victory-fork 6 to 7 fps. The first runs of a new build are far slower and hitch while the driver makes pipelines. |
 | Picture | Sharp at 1080p: the game renders at 2560x1440 and draws in 4K, shrunk to the window. Lit, with textures, characters and sky. A stand-in light fills the shade, since the game's ray-traced lighting is too slow to use here. |
-| Memory | Around 27 to 28 GB of RAM in play, 30.7 GB of private memory at most in a test run, 13.1 GB on the card. As a Series S (`--console series-s`): 27.3 GB and 11.8 GB at the same speed, but rendered at 1280x720 and soft. Give Windows a page file of 48 GB or more. |
+| Memory | 29.0 GB of private memory in play and steady from minute 3 to minute 12 (before the leak fixes: 31.6 GB at 6 minutes and 33.7 GB at 15, still rising), about 21 GB of it in RAM, 13.3 GB on the card. As a Series S (`--console series-s`): 27.3 GB and 11.8 GB at the same speed, but rendered at 1280x720 and soft. Give Windows a page file of 48 GB or more. |
 | Stability | No crash in the recent 5-minute test runs. |
 | Known problem | In places (the swamp of the boat mission) trees drop out for a frame and come back while their shadows stay. Neither VIctory-7900XTX's fix (`VICTORY_PORT_CONSTANTS_ORDER`) nor copying the game's CPU culling depth back (`VICTORY_OCCLUSION_BACK=1`) stopped it there. |
 
@@ -37,6 +37,18 @@ profile, with the switches under "Running it".
   working set of that many GB. If Windows refuses, the layer steps down 2 GB
   at a time to 4 GB and logs what it got. On victory-fork, frames over one
   second fell from 47 to 11 and 25 in 5-minute runs with it at 14.
+- **Memory leaks fixed (2026-11-26).** Our own heap grew by about 150 MB a
+  minute in play, 1.0 GB at the start and 3.3 GB after 15 minutes, and kept
+  going. The game leaves stack garbage in the padding of the view
+  descriptions it writes, and the table of placed-view shapes (kept for the
+  run) counted each garbage variant as a new shape: 3.1 million after
+  15 minutes. Shapes now leave out the description's filler and the view
+  words their dimension does not use: about 50,000 after 7 minutes instead
+  of 800,000. Also fixed: a set that kept every garbage variant of a texture
+  description, each host list keeping room for its longest recording of
+  indirect draws (200 MB), and 8 idle 64 MB texture staging blocks kept
+  (now 2). A heap sampler finds the code that holds the most
+  (`VICTORY_HEAP_SAMPLE=<KiB between samples>`, diagnostics builds).
 - **A status line every 30 seconds**: the card's memory and budget, and
   textures refused for lack of room on the card. It tells from a player's
   log whether a scene that went black or blurry had a full card.
@@ -111,7 +123,7 @@ set "VICTORY_TITLE_PRIORITIES=0"
 set "VICTORY_CARD_AWAKE=1"
 set "VICTORY_SHOW_AFTER=1"
 set "VICTORY_AMBIENT=0.8"
-set "VICTORY_D3D12_DRED=light"
+rem Crash reports are off (their bookkeeping took about 300 MB); to find why the card was lost: set "VICTORY_D3D12_DRED=light"
 set "VICTORY_SKIP_PIPELINES=none"
 set "VICTORY_THIN=1"
 rem 8, as VIctory-7900XTX sets it, shows the intro animation out of order (it jumps back and forth).

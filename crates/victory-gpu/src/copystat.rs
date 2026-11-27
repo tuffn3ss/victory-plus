@@ -452,6 +452,7 @@ unsafe impl std::alloc::GlobalAlloc for Counting {
         if !at.is_null() {
             own(layout.size(), true);
             big(at, layout.size(), true);
+            heapsample::made(at, layout.size());
         }
         at
     }
@@ -462,6 +463,7 @@ unsafe impl std::alloc::GlobalAlloc for Counting {
         if !at.is_null() {
             own(layout.size(), true);
             big(at, layout.size(), true);
+            heapsample::made(at, layout.size());
         }
         at
     }
@@ -469,6 +471,7 @@ unsafe impl std::alloc::GlobalAlloc for Counting {
     unsafe fn dealloc(&self, at: *mut u8, layout: std::alloc::Layout) {
         own(layout.size(), false);
         big(at, layout.size(), false);
+        heapsample::gone(at);
         // SAFETY: the caller's contract, passed on.
         unsafe { std::alloc::System.dealloc(at, layout) };
     }
@@ -481,6 +484,8 @@ unsafe impl std::alloc::GlobalAlloc for Counting {
             own(size, true);
             big(at, layout.size(), false);
             big(moved, size, true);
+            heapsample::gone(at);
+            heapsample::made(moved, size);
         }
         moved
     }
@@ -488,6 +493,8 @@ unsafe impl std::alloc::GlobalAlloc for Counting {
 
 #[global_allocator]
 static HEAP: Counting = Counting;
+
+mod heapsample;
 
 #[cfg(test)]
 mod command_tests {
@@ -806,6 +813,8 @@ fn log_memory_map() {
 /// Logs where the memory is: the process and the PC, then what this crate
 /// holds by kind (alive now), then the host buffers made since the start.
 fn log_memory() {
+    heapsample::start();
+    heapsample::report();
     use std::sync::atomic::Ordering::Relaxed;
     let mb = |v: u64| v as f64 / (1 << 20) as f64;
     let (working, private) = process_memory();

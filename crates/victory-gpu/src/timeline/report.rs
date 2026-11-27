@@ -85,7 +85,7 @@ impl Threads {
 }
 
 /// Names of addresses.
-pub(super) struct Names {
+pub(crate) struct Names {
     known: HashMap<usize, String>,
     symbols: Option<Symbols>,
 }
@@ -151,7 +151,7 @@ impl Symbols {
 }
 
 impl Names {
-    pub(super) fn new() -> Names {
+    pub(crate) fn new() -> Names {
         Names {
             known: HashMap::new(),
             symbols: Symbols::load(),
@@ -181,7 +181,7 @@ impl Names {
 
     /// A name for `address`: our own functions by their names, others by
     /// their module and place in it.
-    fn of(&mut self, address: usize) -> String {
+    pub(crate) fn of(&mut self, address: usize) -> String {
         if let Some(name) = self.known.get(&address) {
             return name.clone();
         }

@@ -58,9 +58,20 @@ impl Indirects {
         }
     }
 
+    /// Ready for the list's next recording. Room left from a recording far
+    /// longer than this one is let go: every host list kept the room of its
+    /// longest recording for the run, 1,700 lists and 200 MB after six
+    /// minutes, still growing (run heap1).
     pub(crate) fn clear(&mut self) {
-        self.ran.clear();
-        self.meshes.clear();
+        fn trim(v: &mut Vec<Ran>) {
+            let used = v.len();
+            v.clear();
+            if v.capacity() > 256 && v.capacity() > 4 * used {
+                v.shrink_to(used * 2);
+            }
+        }
+        trim(&mut self.ran);
+        trim(&mut self.meshes);
         if self.names.len() > 512 {
             self.names.clear();
         }
