@@ -2166,7 +2166,8 @@ pub(crate) fn asks() -> [u64; 13] {
 }
 
 /// The guards' lock, the wait for it counted.
-fn guards_timed() -> std::sync::RwLockWriteGuard<'static, Guards> {
+#[track_caller]
+fn guards_timed() -> GuardsMut {
     #[cfg(feature = "diagnostics")]
     let started = std::time::Instant::now();
     let g = guards();
@@ -2176,6 +2177,7 @@ fn guards_timed() -> std::sync::RwLockWriteGuard<'static, Guards> {
 }
 
 /// [`guards_shared`], the wait for it counted.
+#[track_caller]
 fn guards_timed_shared() -> std::sync::RwLockReadGuard<'static, Guards> {
     #[cfg(feature = "diagnostics")]
     let started = std::time::Instant::now();
@@ -2457,20 +2459,170 @@ static GUARDS: RwLock<Guards> = RwLock::new(Guards {
 });
 
 /// The guards, alone.
-fn guards() -> std::sync::RwLockWriteGuard<'static, Guards> {
-    if let Ok(g) = GUARDS.try_write() {
-        return g;
+#[track_caller]
+fn guards() -> GuardsMut {
+    #[cfg(feature = "diagnostics")]
+    let by = std::panic::Location::caller();
+    let g = match GUARDS.try_write() {
+        Ok(g) => g,
+        Err(_) => waited(3, || {
+            #[cfg(feature = "diagnostics")]
+            let began = std::time::Instant::now();
+            let g = GUARDS.write().unwrap_or_else(|e| e.into_inner());
+            #[cfg(feature = "diagnostics")]
+            guard_sites::note(by, guard_sites::WAIT_ALONE, began.elapsed());
+            g
+        }),
+    };
+    GuardsMut {
+        g: std::mem::ManuallyDrop::new(g),
+        #[cfg(feature = "diagnostics")]
+        by,
+        #[cfg(feature = "diagnostics")]
+        since: std::time::Instant::now(),
     }
-    waited(3, || GUARDS.write().unwrap_or_else(|e| e.into_inner()))
 }
 
 /// The guards, shared (renderer port #6): what changes a block's state holds
 /// its claim ([`Claims`]).
+#[track_caller]
 fn guards_shared() -> std::sync::RwLockReadGuard<'static, Guards> {
     if let Ok(g) = GUARDS.try_read() {
         return g;
     }
-    waited(3, || GUARDS.read().unwrap_or_else(|e| e.into_inner()))
+    #[cfg(feature = "diagnostics")]
+    let by = std::panic::Location::caller();
+    waited(3, || {
+        #[cfg(feature = "diagnostics")]
+        let began = std::time::Instant::now();
+        let g = GUARDS.read().unwrap_or_else(|e| e.into_inner());
+        #[cfg(feature = "diagnostics")]
+        guard_sites::note(by, guard_sites::WAIT_SHARED, began.elapsed());
+        g
+    })
+}
+
+/// [`GUARDS`] held alone. In diagnostics builds it notes, by the line that
+/// took it, how long it was held: a fight's 80 to 110 ms a frame of waits
+/// for this lock (all threads, some 90 waits of about a millisecond each,
+/// the user's play of 2026-11-27) come from a few long holds, and the frame
+/// line did not say whose.
+struct GuardsMut {
+    g: std::mem::ManuallyDrop<std::sync::RwLockWriteGuard<'static, Guards>>,
+    #[cfg(feature = "diagnostics")]
+    by: &'static std::panic::Location<'static>,
+    #[cfg(feature = "diagnostics")]
+    since: std::time::Instant,
+}
+
+impl std::ops::Deref for GuardsMut {
+    type Target = Guards;
+    fn deref(&self) -> &Guards {
+        &self.g
+    }
+}
+
+impl std::ops::DerefMut for GuardsMut {
+    fn deref_mut(&mut self) -> &mut Guards {
+        &mut self.g
+    }
+}
+
+impl Drop for GuardsMut {
+    fn drop(&mut self) {
+        #[cfg(feature = "diagnostics")]
+        let held = self.since.elapsed();
+        // SAFETY: dropped once, here, and not used after.
+        unsafe { std::mem::ManuallyDrop::drop(&mut self.g) };
+        #[cfg(feature = "diagnostics")]
+        guard_sites::note(self.by, guard_sites::HELD, held);
+    }
+}
+
+/// Who holds and who waits for [`GUARDS`], by the line of the call
+/// ([`GuardsMut`]); for the line of the trackers' lock waits.
+#[cfg(feature = "diagnostics")]
+pub(crate) mod guard_sites {
+    use std::panic::Location;
+    use std::sync::Mutex;
+    use std::time::Duration;
+
+    /// Held alone, waited for alone, waited for shared.
+    pub(super) const HELD: usize = 0;
+    pub(super) const WAIT_ALONE: usize = 1;
+    pub(super) const WAIT_SHARED: usize = 2;
+
+    /// By line: times and nanoseconds of each kind, and the longest hold.
+    struct Site {
+        at: &'static Location<'static>,
+        n: [u64; 3],
+        ns: [u64; 3],
+        longest: u64,
+    }
+
+    static SITES: Mutex<Vec<Site>> = Mutex::new(Vec::new());
+
+    pub(super) fn note(at: &'static Location<'static>, kind: usize, took: Duration) {
+        let ns = took.as_nanos() as u64;
+        let mut sites = SITES.lock().unwrap_or_else(|e| e.into_inner());
+        let i = match sites.iter().position(|s| std::ptr::eq(s.at, at)) {
+            Some(i) => i,
+            None => {
+                sites.push(Site { at, n: [0; 3], ns: [0; 3], longest: 0 });
+                sites.len() - 1
+            }
+        };
+        let s = &mut sites[i];
+        s.n[kind] += 1;
+        s.ns[kind] += ns;
+        if kind == HELD {
+            s.longest = s.longest.max(ns);
+        }
+    }
+
+    /// Since the last call, per frame: the lines that held the guards alone
+    /// longest, and those that waited longest.
+    pub(crate) fn line(frames: f64) -> String {
+        let mut sites = SITES.lock().unwrap_or_else(|e| e.into_inner());
+        let name = |s: &Site| format!("{}:{}", s.at.file().rsplit(['/', '\\']).next().unwrap_or(""), s.at.line());
+        let mut held: Vec<&Site> = sites.iter().filter(|s| s.n[HELD] > 0).collect();
+        held.sort_by_key(|s| std::cmp::Reverse(s.ns[HELD]));
+        let held: Vec<String> = held
+            .iter()
+            .take(8)
+            .map(|s| {
+                format!(
+                    "{} {:.1}x {:.2} ms (longest {:.2})",
+                    name(s),
+                    s.n[HELD] as f64 / frames,
+                    s.ns[HELD] as f64 / 1e6 / frames,
+                    s.longest as f64 / 1e6
+                )
+            })
+            .collect();
+        let mut waits: Vec<&Site> = sites.iter().filter(|s| s.n[WAIT_ALONE] + s.n[WAIT_SHARED] > 0).collect();
+        waits.sort_by_key(|s| std::cmp::Reverse(s.ns[WAIT_ALONE] + s.ns[WAIT_SHARED]));
+        let waits: Vec<String> = waits
+            .iter()
+            .take(8)
+            .map(|s| {
+                format!(
+                    "{} alone {:.1}x {:.2} ms, shared {:.1}x {:.2} ms",
+                    name(s),
+                    s.n[WAIT_ALONE] as f64 / frames,
+                    s.ns[WAIT_ALONE] as f64 / 1e6 / frames,
+                    s.n[WAIT_SHARED] as f64 / frames,
+                    s.ns[WAIT_SHARED] as f64 / 1e6 / frames
+                )
+            })
+            .collect();
+        for s in sites.iter_mut() {
+            s.n = [0; 3];
+            s.ns = [0; 3];
+            s.longest = 0;
+        }
+        format!("held alone the longest: {}; waited the longest: {}", held.join(", "), waits.join("; "))
+    }
 }
 
 /// The 4 KiB pages of title memory that what shaders wrote was put into,
@@ -3725,7 +3877,8 @@ fn forget_views(first: usize, last: usize) {
 
 /// Tells what keeps track of what title memory shows; the guards, with no
 /// block of the range known unmapped.
-fn title_memory_changed(at: usize, len: usize) -> std::sync::RwLockWriteGuard<'static, Guards> {
+#[track_caller]
+fn title_memory_changed(at: usize, len: usize) -> GuardsMut {
     // A placed texture there arrives, goes or changes with no descriptor
     // written.
     crate::descriptor::host::remapped(at, len);

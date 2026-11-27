@@ -2848,7 +2848,7 @@ impl HostHeap {
             } else {
                 self.clear_twin(index);
             }
-            self.keep(index, made.kept.clone());
+            self.keep_ref(index, made.kept.as_ref());
             Some(made.listed)
         })
     }
@@ -2906,6 +2906,15 @@ impl HostHeap {
 
     /// Slot `index` now views `resource` (or nothing of the host's).
     fn keep(&self, index: u32, resource: Option<ID3D12Resource>) {
+        self.keep_ref(index, resource.as_ref());
+    }
+
+    /// As [`HostHeap::keep`], taking a reference of its own only if the slot
+    /// held another: a list's views ([`HostHeap::make_listed`]) put the same
+    /// resource into the same slot draw after draw, and each clone and drop
+    /// of it was a count changed on one word that eight translating threads
+    /// share (5 % of their time, run prof1).
+    fn keep_ref(&self, index: u32, resource: Option<&ID3D12Resource>) {
         let Some(slot) = self.kept.get(index as usize) else {
             return;
         };
@@ -2913,10 +2922,10 @@ impl HostHeap {
             use windows::core::Interface;
             let mut slot = slot.lock().unwrap_or_else(|e| e.into_inner());
             // The same again: nothing to retire.
-            if slot.as_ref().map(Interface::as_raw) == resource.as_ref().map(Interface::as_raw) {
+            if slot.as_ref().map(Interface::as_raw) == resource.map(Interface::as_raw) {
                 return;
             }
-            std::mem::replace(&mut *slot, resource)
+            std::mem::replace(&mut *slot, resource.cloned())
         };
         // A running submission may still read the old resource through
         // this slot.

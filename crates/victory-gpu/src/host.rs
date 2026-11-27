@@ -1327,12 +1327,23 @@ struct BatchBuf(ID3D12Resource);
 unsafe impl Send for BatchBuf {}
 
 static SPARE_BATCH: Mutex<Vec<BatchBuf>> = Mutex::new(Vec::new());
-const SPARE_BATCH_MAX: usize = 64;
+/// (64 until 2026-11-27: in the boat scene some 1,000 a second were taken
+/// again, but 25 a second were made, and as many let go, as the lists in
+/// the air at once came to more than 64; each made one waits for the card to
+/// make it resident and map it. 192 of 256 KiB: 48 MB of the card's memory
+/// at most.)
+const SPARE_BATCH_MAX: usize = 192;
+
+/// Batch buffers taken from the spares, made, and let go for want of room
+/// among them (since the last line).
+pub(crate) static BATCH_COUNTS: [std::sync::atomic::AtomicU64; 3] = [const { std::sync::atomic::AtomicU64::new(0) }; 3];
 
 fn take_batch_buffer(size: u64) -> Option<ID3D12Resource> {
     if let Some(BatchBuf(buf)) = SPARE_BATCH.lock().unwrap_or_else(|e| e.into_inner()).pop() {
+        BATCH_COUNTS[0].fetch_add(1, Ordering::Relaxed);
         return Some(buf);
     }
+    BATCH_COUNTS[1].fetch_add(1, Ordering::Relaxed);
     let made = host()?.uav_buffer(size)?;
     name(&made, || format!("indirect batches {size:#x}"));
     Some(made)
@@ -1354,6 +1365,7 @@ fn give_batch_buffers(buffers: Vec<ID3D12Resource>) {
             }
         }
     }
+    BATCH_COUNTS[2].fetch_add(overflow.len() as u64, Ordering::Relaxed);
     drop(overflow);
 }
 
@@ -2456,6 +2468,9 @@ struct Deferred {
     /// Destination, source, bytes.
     copies: Vec<Step>,
     uploads: Vec<ID3D12Resource>,
+    /// Of those, the ones that go back to [`upload_pool`] when the list is
+    /// reset (or let go).
+    pooled: Vec<upload_pool::Pooled>,
     /// The bytes of `uploads` (counted in [`ALIVE`] while they are held).
     upload_bytes: u64,
     /// Host objects the list's commands name (pipelines, root signatures,
@@ -2522,6 +2537,128 @@ impl Drop for Deferred {
     fn drop(&mut self) {
         ALIVE[6].fetch_sub(self.uploads.len() as u64, Ordering::Relaxed);
         ALIVE[7].fetch_sub(self.upload_bytes, Ordering::Relaxed);
+        // (A list's work is let go only once its submissions have run.)
+        upload_pool::give(std::mem::take(&mut self.pooled));
+    }
+}
+
+/// The buffers of list uploads with `VICTORY_CARD_STEPS=2` (shared buffers:
+/// the card may fill them), kept for the next list when the list that held
+/// them is reset, by size in powers of two (`VICTORY_UPLOAD_POOL_MB`, 128
+/// unless given: what is kept at most; `0`: made and let go each time, as
+/// before).
+///
+/// Each was made for one upload and let go at the list's reset: some 60 a
+/// second in the boat scene and in a fight alike (the user's play of
+/// 2026-11-27: 53,000 in 14 minutes), and making one waits for the card to
+/// make it resident and to map it, about 1.5 ms, on the thread that
+/// translates the list, besides the driver's work to make and free it.
+pub(crate) mod upload_pool {
+    use std::sync::Mutex;
+    use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
+    use windows::Win32::Graphics::Direct3D12::ID3D12Resource;
+
+    /// Sizes from 64 KiB to 64 MiB; larger ones are made as before.
+    const SMALLEST: u32 = 16;
+    const LARGEST: u32 = 26;
+
+    pub(crate) struct Pooled {
+        pub(crate) buffer: ID3D12Resource,
+        pub(crate) data: *mut u8,
+        /// Its size: `1 << class` bytes.
+        pub(crate) class: u32,
+    }
+    // SAFETY: a D3D12 resource is free-threaded; the pointer is its mapping,
+    // written by one list at a time.
+    unsafe impl Send for Pooled {}
+
+    struct Pool {
+        by_class: Vec<Vec<Pooled>>,
+        bytes: u64,
+    }
+
+    static POOL: Mutex<Pool> = Mutex::new(Pool { by_class: Vec::new(), bytes: 0 });
+
+    /// Taken from the pool, made new, and not kept for want of room (since
+    /// the last line).
+    pub(crate) static COUNTS: [AtomicU64; 3] = [const { AtomicU64::new(0) }; 3];
+
+    fn most() -> u64 {
+        static MB: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
+        *MB.get_or_init(|| std::env::var("VICTORY_UPLOAD_POOL_MB").ok().and_then(|v| v.trim().parse().ok()).unwrap_or(128)) << 20
+    }
+
+    /// The size class of `size` bytes, if such buffers are kept.
+    pub(crate) fn class(size: u64) -> Option<u32> {
+        if most() == 0 {
+            return None;
+        }
+        let class = size.max(1).next_power_of_two().trailing_zeros().max(SMALLEST);
+        (class <= LARGEST).then_some(class)
+    }
+
+    /// A kept buffer of at least `size` bytes: the buffer, its mapping and
+    /// its class.
+    pub(crate) fn take(size: u64) -> Option<(ID3D12Resource, *mut u8, Option<u32>)> {
+        let class = class(size)?;
+        let taken = {
+            let mut pool = POOL.lock().unwrap_or_else(|e| e.into_inner());
+            let p = pool.by_class.get_mut(class as usize).and_then(Vec::pop);
+            if p.is_some() {
+                pool.bytes -= 1 << class;
+            }
+            p
+        };
+        match taken {
+            Some(p) => {
+                COUNTS[0].fetch_add(1, Relaxed);
+                Some((p.buffer, p.data, Some(p.class)))
+            }
+            None => {
+                COUNTS[1].fetch_add(1, Relaxed);
+                None
+            }
+        }
+    }
+
+    /// The buffers of a list that was reset: kept while there is room.
+    pub(crate) fn give(buffers: Vec<Pooled>) {
+        if buffers.is_empty() {
+            return;
+        }
+        let most = most();
+        let mut dropped = Vec::new();
+        {
+            let mut pool = POOL.lock().unwrap_or_else(|e| e.into_inner());
+            for p in buffers {
+                let size = 1u64 << p.class;
+                if pool.bytes + size > most {
+                    dropped.push(p);
+                    continue;
+                }
+                let class = p.class as usize;
+                if pool.by_class.len() <= class {
+                    pool.by_class.resize_with(class + 1, Vec::new);
+                }
+                pool.bytes += size;
+                pool.by_class[class].push(p);
+            }
+        }
+        COUNTS[2].fetch_add(dropped.len() as u64, Relaxed);
+        // (Let go outside the lock.)
+        drop(dropped);
+    }
+
+    /// Since the last call: taken from the pool, made, not kept; and the MB
+    /// kept now.
+    #[cfg(feature = "diagnostics")]
+    pub(crate) fn line() -> String {
+        let [taken, made, not_kept] = [0, 1, 2].map(|i| COUNTS[i].swap(0, Relaxed));
+        let mb = POOL.lock().unwrap_or_else(|e| e.into_inner()).bytes >> 20;
+        let [b_taken, b_made, b_gone] = [0, 1, 2].map(|i| super::BATCH_COUNTS[i].swap(0, Relaxed));
+        format!(
+            "{taken} taken again, {made} made, {not_kept} let go for want of room; {mb} MB kept (VICTORY_UPLOAD_POOL_MB);              indirect batch buffers: {b_taken} taken again, {b_made} made, {b_gone} let go for want of room"
+        )
     }
 }
 
@@ -7338,7 +7475,26 @@ impl HostList {
     /// shortcut: one buffer per copy; pool them once uploads are frequent.
     pub(crate) fn upload(&self, host: &Host, size: u64) -> Option<(ID3D12Resource, *mut u8)> {
         // With [`card_steps`] the card may be the one that fills it.
-        let (buffer, data) = if card_steps::stage() > 1 { host.shared_buffer(size)? } else { host.upload_buffer(size)? };
+        if card_steps::stage() > 1 {
+            // One of the list uploads lists let go at their reset, if one
+            // is big enough ([`upload_pool`]).
+            let (buffer, data, class) = match upload_pool::take(size) {
+                Some(taken) => taken,
+                None => {
+                    let class = upload_pool::class(size);
+                    let (buffer, data) = host.shared_buffer(class.map_or(size, |c| 1u64 << c))?;
+                    name(&buffer, || format!("list upload {size:#x}"));
+                    (buffer, data, class)
+                }
+            };
+            let mut deferred = self.deferred();
+            deferred.hold_upload(buffer.clone(), size);
+            if let Some(class) = class {
+                deferred.pooled.push(upload_pool::Pooled { buffer: buffer.clone(), data, class });
+            }
+            return Some((buffer, data));
+        }
+        let (buffer, data) = host.upload_buffer(size)?;
         name(&buffer, || format!("list upload {size:#x}"));
         self.deferred().hold_upload(buffer.clone(), size);
         Some((buffer, data))
