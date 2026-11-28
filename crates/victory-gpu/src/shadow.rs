@@ -5487,7 +5487,7 @@ pub(crate) fn by_address(start: u64, len: u64) -> Option<Arc<Shadow>> {
         let mb = std::env::var("VICTORY_MEMORY_CARD_MB").ok().and_then(|v| v.trim().parse::<u64>().ok());
         mb.unwrap_or(4096) << 20
     });
-    let room = host.video_memory().is_none_or(|[budget, used, ..]| used + len < budget / 100 * 97);
+    let room = host.video_memory().is_none_or(|[budget, used, ..]| crate::resource::by_address_room(budget, used, len));
     let (staging, data) = host.shared_buffer(len)?;
     let on_card = if room && USED.fetch_add(len, Ordering::Relaxed) + len <= most {
         host.uav_buffer(len).or_else(|| {

@@ -1687,7 +1687,11 @@ fn hosted(this: This, make: bool) -> Option<Made> {
             None => host_texture(&r.desc.from_level(base), r.host.state, clear),
         };
         let Some(texture) = texture else {
-            r.host.refused.store(true, Relaxed);
+            // (Not one that only waits for a place in a block,
+            // `crate::pool::waiting`: it is asked for again.)
+            if !crate::pool::waits() {
+                r.host.refused.store(true, Relaxed);
+            }
             return None;
         };
         let twin = twin_texture(&r.desc, &texture);
@@ -1794,12 +1798,85 @@ pub(crate) fn room(memory: Option<[u64; 4]>) -> bool {
         // (`crate::shadow::card_room_kept`) and for the render targets a
         // world makes in its first frame ([`targets_room_kept`]) counts as
         // used.
-        Some([budget, used, ..]) => {
-            used.saturating_sub(crate::pool::texture_room()) + crate::shadow::card_room_kept() + targets_room_kept()
-                < budget / 100 * room_percent()
-        }
+        Some([budget, used, ..]) => weighed(budget, used) < room_line(budget),
         None => filled < WITHOUT_BUDGET,
     }
+}
+
+/// The line [`room`] weighs against: [`room_percent`] of the budget.
+#[cfg(windows)]
+fn room_line(budget: u64) -> u64 {
+    budget / 100 * room_percent()
+}
+
+/// What [`room`] and the sweep ([`let_go_idle`]) weigh against the line, in
+/// bytes of a budget of `budget` with `used` in use: the card's use less
+/// the free part of the texture blocks (new textures take that first), with
+/// what is kept for buffer copies and render targets.
+///
+/// And while the card has no room for a new block of textures
+/// ([`block_room`], `crate::pool::gate`) not less than [`blocks_full`]: the
+/// free part of the blocks is then all the room there is, whatever the
+/// card's use says. (Ported from victory-fork 2eade68c.)
+#[cfg(windows)]
+fn weighed(budget: u64, used: u64) -> u64 {
+    let free = crate::pool::texture_room();
+    let by_use = used.saturating_sub(free) + crate::shadow::card_room_kept() + targets_room_kept();
+    if crate::pool::gate() && !block_room(Some([budget, used, 0, 0])) {
+        by_use.max(blocks_full(room_line(budget), free))
+    } else {
+        by_use
+    }
+}
+
+/// What is weighed against `line` while no block of textures can be made,
+/// with `free` bytes free in the blocks there are: under the line while
+/// more than a block's worth is free, so the sweep keeps a block's worth
+/// free in the blocks.
+#[cfg(any(windows, test))]
+fn blocks_full(line: u64, free: u64) -> u64 {
+    (line + POOL_BLOCK).saturating_sub(free)
+}
+
+/// A block of textures (`crate::pool`).
+#[cfg(any(windows, test))]
+const POOL_BLOCK: u64 = 64 << 20;
+
+/// Whether the card has room for one more block of textures
+/// (`crate::pool::gate`): its whole use (a block made is the card's memory
+/// in use whatever lies in it), with the block, with what is kept for card
+/// copies of title buffers not made yet and for render targets still to
+/// come, stays within the queue's line ([`room_line`]). Always while the
+/// textures the title fills hold less than their floor, and without the
+/// system's numbers.
+#[cfg(windows)]
+pub(crate) fn block_room(memory: Option<[u64; 4]>) -> bool {
+    use std::sync::atomic::Ordering::Relaxed;
+    let Some([budget, used, ..]) = memory else {
+        return true;
+    };
+    let filled = KINDS[1].load(Relaxed) + crate::tiles::given_total();
+    let room = filled < texture_floor_bytes(Some(budget))
+        || block_fits(used, crate::shadow::card_room_kept() + targets_room_kept(), room_line(budget));
+    crate::pool::note_full(!room);
+    room
+}
+
+/// [`block_room`]'s sum: `used` bytes in use and `kept` to come, with one
+/// more block, within `line`.
+#[cfg(any(windows, test))]
+fn block_fits(used: u64, kept: u64, line: u64) -> bool {
+    used + kept + POOL_BLOCK <= line
+}
+
+/// Whether `len` more bytes of title memory by address go into the card's
+/// own memory: while the card's use with them, and with the render targets
+/// still to come ([`targets_room_kept`]), stays under 97 hundredths of
+/// `budget`. (It was the 97 hundredths alone; with the blocks held under the
+/// line the card has room again, and these would take it at once.)
+#[cfg(windows)]
+pub(crate) fn by_address_room(budget: u64, used: u64, len: u64) -> bool {
+    used + len + targets_room_kept() < budget / 100 * 97
 }
 
 /// The bytes of the card's memory the texture queue leaves free for
@@ -2134,12 +2211,7 @@ pub(crate) fn let_go_idle() {
     let keep = *KEEP
         .get_or_init(|| !matches!(std::env::var("VICTORY_TEXTURE_KEEP").as_deref(), Ok("0") | Ok("1")));
     let (idle_ms, most) = match memory {
-        Some([budget, used, ..]) if keep => {
-            let used = used.saturating_sub(crate::pool::texture_room())
-                + crate::shadow::card_room_kept()
-                + targets_room_kept();
-            crate::host::vram_keep(budget, used)
-        }
+        Some([budget, used, ..]) if keep => crate::host::vram_keep(budget, weighed(budget, used)),
         _ => (crate::host::vram_idle_ms(memory), u64::MAX),
     };
     // For the trail (`crate::host::trail`): how many went, their bytes,
@@ -2600,6 +2672,12 @@ fn host_texture_as(
             format!("texture {}x{} f{} flags {:#x} (in a block)", d.width, d.height, d.format, d.flags)
         });
         return Some(t);
+    }
+    // No block has a place for it and the card has no room for a new one
+    // (`crate::pool::gate`), and it can wait: not made with memory of its
+    // own either, which would be the card's memory all the same.
+    if crate::pool::waits() {
+        return None;
     }
     let mut texture: Option<ID3D12Resource> = None;
     let made = if reserved {

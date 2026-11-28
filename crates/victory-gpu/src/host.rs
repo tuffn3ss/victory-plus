@@ -9739,6 +9739,18 @@ impl Meter {
                 );
                 crate::tiles::status();
                 {
+                    // The gate on new blocks of textures (`crate::pool::gate`).
+                    let [n, free, q0, _, q1, _, q2, _, q3, _, given] = crate::pool::fill();
+                    let [made, not_made, past] = crate::pool::BLOCKS.each_ref().map(|b| b.load(Ordering::Relaxed));
+                    let waiting = crate::draw::HEAP_TEXTURES_NO_PLACE[1].swap(0, Ordering::Relaxed);
+                    tracing::info!(
+                        "texture blocks{}: {n} ({} MB), {} MB free; by how full {q0} / {q1} / {q2} / {q3} (quarters); since                          the start {made} made, {not_made} not made for want of room, {past} made without room, {given} given                          back; {waiting} looks at textures waiting for a place since the last line",
+                        if crate::pool::gate() { "" } else { " (VICTORY_POOL_GATE=0)" },
+                        n * 64,
+                        free >> 20,
+                    );
+                }
+                {
                     let [queued, due, away, partly, oldest] =
                         [0, 1, 2, 3, 4].map(|i| crate::draw::HEAP_TEXTURES_QUEUE[i].load(Ordering::Relaxed));
                     let [same, parts, tails] =
