@@ -1392,6 +1392,9 @@ pub(crate) struct HostList {
     /// The list that runs those transitions just before this one, made
     /// when the list first has such transitions ([`lazy_prelude`]).
     prelude: OnceLock<Option<Prelude>>,
+    /// The prelude's scratch for textures detiled on the card
+    /// (`crate::gpudetile`), and its bytes; grown when a prelude needs more.
+    detile_scratch: Mutex<Option<(ID3D12Resource, u64)>>,
     /// The pipelines the list binds, for reports of slow submissions.
     pipelines: std::sync::Arc<Mutex<std::collections::BTreeSet<String>>>,
     /// What its indirect executions ran, for the report of a removed device.
@@ -4485,6 +4488,7 @@ impl Host {
                 states: Mutex::default(),
                 twins: Mutex::default(),
                 prelude,
+                detile_scratch: Mutex::default(),
                 pipelines,
                 #[cfg(feature = "diagnostics")]
                 indirects,
@@ -7189,6 +7193,34 @@ impl HostList {
         if barriers.is_empty() && syncs.is_empty() && uploads.is_empty() {
             return None;
         }
+        // Textures detiled on the card (`crate::gpudetile`): each one's part
+        // of the prelude's scratch buffer, which the dispatches write and the
+        // copies read.
+        let mut need = 0u64;
+        let parts: Vec<Option<u64>> = uploads
+            .iter()
+            .map(|(upload, _)| {
+                upload.scratch_bytes().map(|bytes| {
+                    let at = need;
+                    need = (need + bytes).next_multiple_of(crate::gpudetile::SCRATCH_ALIGN);
+                    at
+                })
+            })
+            .collect();
+        let scratch = (need > 0)
+            .then(|| {
+                let mut kept = self.detile_scratch.lock().unwrap_or_else(|e| e.into_inner());
+                if kept.as_ref().is_none_or(|(_, bytes)| *bytes < need) {
+                    let size = need.next_power_of_two().max(4 << 20);
+                    *kept = None;
+                    *kept = host().and_then(|h| h.uav_buffer(size)).map(|b| (b, size));
+                    if let Some((b, _)) = kept.as_ref() {
+                        name(b, || format!("texture detile scratch of {} MB", size >> 20));
+                    }
+                }
+                kept.as_ref().map(|(b, _)| b.clone())
+            })
+            .flatten();
         let Some((allocator, list)) = self
             .prelude
             .get_or_init(|| host().and_then(|h| h.make_prelude()))
@@ -7210,8 +7242,34 @@ impl HostList {
                 for (depth, twin, colour) in &syncs {
                     record_twin_copy(list, &depth.texture, twin, *colour);
                 }
-                for (upload, _) in uploads {
-                    upload.record(self, list);
+                if let Some(scratch) = &scratch {
+                    list.ResourceBarrier(&[transition(
+                        scratch,
+                        D3D12_RESOURCE_STATE_COMMON,
+                        D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+                    )]);
+                    let base = scratch.GetGPUVirtualAddress();
+                    for ((upload, _), at) in uploads.iter().zip(&parts) {
+                        if let Some(at) = at {
+                            upload.record_detile(list, base + at);
+                        }
+                    }
+                    // (A buffer goes back to the common state when the
+                    // submission has run.)
+                    list.ResourceBarrier(&[transition(
+                        scratch,
+                        D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+                        D3D12_RESOURCE_STATE_COPY_SOURCE,
+                    )]);
+                }
+                for ((upload, _), at) in uploads.iter().zip(&parts) {
+                    match (at, &scratch) {
+                        (None, _) => upload.record(self, list, None),
+                        (Some(at), Some(scratch)) => upload.record(self, list, Some((scratch, *at))),
+                        // No scratch could be had: the staging buffer holds
+                        // tiled bytes, so this upload waits for the next.
+                        (Some(_), None) => upload.again(),
+                    }
                 }
                 if !barriers.is_empty() {
                     list.ResourceBarrier(&barriers);
@@ -9618,6 +9676,21 @@ impl Meter {
                         "texture refreshes per frame, all threads: {all:.1} ms, of them {own:.1} ms waiting for a texture another thread \
                          is refreshing, {asking:.1} ms asking the write watch and the guards, {still:.1} ms waiting for title memory to \
                          hold still (the runtime remapping it); the rest is reading, hashing and detiling"
+                    );
+                }
+                let [cpu_us, cpu_bytes, cpu_textures] =
+                    [0, 1, 2].map(|i| crate::texture::DETILED[i].swap(0, Ordering::Relaxed) as f64 / frames);
+                let [card_textures, card_dispatches, card_bytes, card_us, card_made, card_refused] =
+                    std::array::from_fn::<f64, 6, _>(|i| crate::gpudetile::STATS[i].swap(0, Ordering::Relaxed) as f64 / frames);
+                if cpu_bytes + card_bytes > 0.0 {
+                    tracing::info!(
+                        "texture detiling per frame: on the PC {:.2} ms for {:.1} MB ({cpu_textures:.1} textures); on the card \
+                         (VICTORY_GPU_DETILE) {card_textures:.1} textures in {card_dispatches:.0} dispatches, the PC copying \
+                         {:.1} MB as laid out in {:.2} ms; stagings made for the card {card_made:.1}, could not take it {card_refused:.1}",
+                        cpu_us / 1e3,
+                        cpu_bytes / 1e6,
+                        card_bytes / 1e6,
+                        card_us / 1e3,
                     );
                 }
                 let [through, left, filled, short] =
