@@ -130,6 +130,55 @@ pub(crate) fn place_part(device: &ID3D12Device, start: u64, len: u64) -> Result<
     Ok(Placed { buffer, heap, gpu, bias: start - at })
 }
 
+/// Whether `section` was made committed (only such a section opens as a
+/// heap).
+fn section_committed(section: usize) -> bool {
+    views().sections.iter().any(|s| s.0 == section && s.2)
+}
+
+/// The heaps opened on committed sections, by the section's handle: one per
+/// section, kept until the runtime lets go of the section. A placed buffer
+/// holds its heap too.
+static SECTION_HEAPS: std::sync::Mutex<Vec<(usize, Option<ID3D12Heap>)>> = std::sync::Mutex::new(Vec::new());
+
+/// The bytes `[offset, offset + len)` of committed `section` (one run of
+/// it, as a view shows them) as a buffer placed in the section's heap.
+/// Unlike a part of private memory, nothing is locked by opening, and the
+/// title may unmap, remap or protect its views as it likes: the heap is
+/// the section's pages, not the view (the probe checks it).
+fn place_in_section(device: &ID3D12Device, section: usize, offset: u64, len: u64) -> Result<Placed, Option<windows::core::Error>> {
+    let bytes_of = views().sections.iter().find(|s| s.0 == section).map(|s| s.1).ok_or(None)?;
+    let at = offset & !(K64 as u64 - 1);
+    let bytes = (offset + len.max(1)).next_multiple_of(K64 as u64) - at;
+    if at + bytes > bytes_of {
+        return Err(None);
+    }
+    let heap = {
+        let mut heaps = SECTION_HEAPS.lock().unwrap_or_else(|e| e.into_inner());
+        match heaps.iter().find(|h| h.0 == section) {
+            // Refused once: not asked again (the host says the same).
+            Some((_, None)) => return Err(None),
+            Some((_, Some(heap))) => heap.clone(),
+            None => match open(device, From::Section(section)) {
+                Ok(heap) => {
+                    tracing::info!(section = format_args!("{section:#x}"), mb = bytes_of >> 20, "the title's physical pages opened as a heap (VICTORY_POOL_COMMIT)");
+                    heaps.push((section, Some(heap.clone())));
+                    heap
+                }
+                Err(e) => {
+                    tracing::warn!(section = format_args!("{section:#x}"), mb = bytes_of >> 20, error = %e, "the title's physical pages could not be opened as a heap: copies as before");
+                    heaps.push((section, None));
+                    return Err(Some(e));
+                }
+            },
+        }
+    };
+    let buffer = place(device, &heap, at, bytes).map_err(Some)?;
+    // SAFETY: a live buffer.
+    let gpu = unsafe { buffer.GetGPUVirtualAddress() } + (offset - at);
+    Ok(Placed { buffer, heap, gpu, bias: offset - at })
+}
+
 /// Title memory `[start, start + len)` in place, for a window outside
 /// buffers or a title buffer, if [`level`] asks for it and the memory can
 /// be opened; `None` leaves the caller to make a copy, as before.
@@ -137,17 +186,27 @@ pub(crate) fn place_for(start: u64, len: u64, window: bool) -> Option<Placed> {
     if level() < if window { 1 } else { 2 } {
         return None;
     }
-    // View memory: known from the runtime without asking Windows.
-    if cover(start as usize, len as usize) != Cover::None {
-        STATS[4].fetch_add(1, Ordering::Relaxed);
-        return None;
-    }
+    // View memory: known from the runtime without asking Windows. One run of
+    // a section made committed (`VICTORY_POOL_COMMIT=1` on the runtime's
+    // side) is placed in the section's heap; anything else is copied.
+    let view = match cover(start as usize, len as usize) {
+        Cover::None => None,
+        Cover::Run(section, offset) if section_committed(section) => Some((section, offset)),
+        _ => {
+            STATS[4].fetch_add(1, Ordering::Relaxed);
+            return None;
+        }
+    };
     if STATS[1].load(Ordering::Relaxed) + STATS[3].load(Ordering::Relaxed) + len > most() {
         STATS[6].fetch_add(1, Ordering::Relaxed);
         return None;
     }
     let host = crate::host::host()?;
-    match place_part(&host.device, start, len) {
+    let placed = match view {
+        Some((section, offset)) => place_in_section(&host.device, section, offset, len),
+        None => place_part(&host.device, start, len),
+    };
+    match placed {
         Ok(placed) => {
             let at = if window { 0 } else { 2 };
             STATS[at].fetch_add(1, Ordering::Relaxed);
@@ -322,6 +381,8 @@ pub fn title_memory_section(section: usize, bytes: u64, committed: bool) {
 /// The runtime lets go of a section, and of its handle: no view the title
 /// sees is of it any more, and [`beside`]'s view goes.
 pub fn title_memory_section_gone(section: usize) {
+    // Its heap stays alive in the buffers placed in it until they go.
+    SECTION_HEAPS.lock().unwrap_or_else(|e| e.into_inner()).retain(|h| h.0 != section);
     let whole = {
         let mut v = views_mut();
         let at = v.whole.iter().position(|w| w.0 == section);

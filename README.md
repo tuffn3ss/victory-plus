@@ -12,7 +12,7 @@ upstream kernel fix, with measurements from an AMD Radeon RX 7800 XT with
 copy of the game. It is not affiliated with or endorsed by the game's
 developer or publisher.
 
-## Status (2026-11-26, evening)
+## Status (2026-11-26, evening; zero-copy added 2026-11-27)
 
 Tested on one PC: AMD Radeon RX 7800 XT 16 GB, AMD Ryzen 5 7600X, 32 GB RAM,
 Windows 11 Pro. Measured in the boat scene the save loads into, Series X
@@ -49,6 +49,24 @@ profile, with the switches under "Running it".
   indirect draws (200 MB), and 8 idle 64 MB texture staging blocks kept
   (now 2). A heap sampler finds the code that holds the most
   (`VICTORY_HEAP_SAMPLE=<KiB between samples>`, diagnostics builds).
+- **Zero-copy reads of the game's memory (2026-11-27)**
+  (`VICTORY_POOL_COMMIT=1` with `VICTORY_INPLACE=2`). The game's physical
+  pages are committed up front, so that sections of them open as a card heap,
+  and buffers and windows that lie in one run of a section, or in the game's
+  private memory, are read by the card where they are instead of through
+  copies. Boat scene, 6 minutes: 45 to 50 ms a frame instead of 57. Do not
+  combine with `VICTORY_LATE_WAIT`. The 6.2 GB page pool itself is still
+  refused as a heap (too big, it seems), so only about 0.4 GB is read in place.
+- **Smaller copies of the game's memory** (`VICTORY_WINDOW_TAILS=1`,
+  `VICTORY_WINDOW_KB=256`): the copies the card reads cover what is read, not
+  whole 4 MB blocks. About 1 GB less memory, same speed.
+- **Fewer new buffers in busy scenes**: list uploads come from a kept pool,
+  more spare batches are kept. In the boat, the time spent waiting for new
+  memory fell from 8.5 to 1.75 seconds a minute.
+- **Texture detiling on the card** (`VICTORY_GPU_DETILE=1`, off), ported from
+  victory-fork with one scratch buffer per list instead of one per texture.
+  Byte-exact against the CPU on the software adapter, but the CPU's detiling
+  costs only about 0.5 ms a frame here, so it stays off.
 - **A status line every 30 seconds**: the card's memory and budget, and
   textures refused for lack of room on the card. It tells from a player's
   log whether a scene that went black or blurry had a full card.
@@ -142,6 +160,12 @@ rem 24 threads read the game's streamed data (default: one per CPU thread); deta
 set "VICTORY_DSTORAGE_WORKERS=24"
 rem Keeps 14 GB of the emulator in RAM. On a PC with less than 32 GB, lower it.
 set "VICTORY_MEMORY_FLOOR_GB=14"
+rem Copies of the game's memory cut to what is read: about 1 GB less.
+set "VICTORY_WINDOW_TAILS=1"
+set "VICTORY_WINDOW_KB=256"
+rem Zero-copy: the card reads parts of the game's memory in place (faster; not with VICTORY_LATE_WAIT).
+set "VICTORY_POOL_COMMIT=1"
+set "VICTORY_INPLACE=2"
 rem Runs write down the pipelines they make; warm makes the new ones before the run.
 set "VICTORY_PIPELINE_BOOK=1"
 target\diag\victory.exe warm --used
